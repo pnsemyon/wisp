@@ -1,10 +1,12 @@
 # Wisp — Architecture
 
-Wisp is a Windows VPN/proxy client (with a future Android target) for VLESS+REALITY,
-VLESS+Vision, and Hysteria2 servers. It does **not** re-implement these protocols in Rust —
-instead it wraps the [sing-box](https://github.com/SagerNet/sing-box) engine (the same engine
-used by Hiddify and the official sing-box apps), and adds the parts that are missing or
-inconvenient in existing clients:
+Wisp is a Windows VPN/proxy client (with a future Android target) for VLESS+REALITY (including
+the XHTTP transport), VLESS+Vision, and Hysteria2 servers. It does **not** re-implement these
+protocols in Rust — instead it wraps
+[`shtorm-7/sing-box-extended`](https://github.com/shtorm-7/sing-box-extended), a fork of
+[sing-box](https://github.com/SagerNet/sing-box) (same config schema, same engine used by
+Hiddify and the official sing-box apps) that additionally implements Xray-only transports such
+as XHTTP, and adds the parts that are missing or inconvenient in existing clients:
 
 1. **Per-app / per-domain split tunneling** with a friendly UI.
 2. **Automatic MTU handling** (no manual `ip link set mtu` steps).
@@ -20,7 +22,7 @@ Wisp/
 │   └── wisp-cli/      # Headless CLI for testing core+engine without a GUI.
 ├── src-tauri/         # Tauri v2 desktop backend (commands, tray, state).
 ├── ui/                # Web frontend (vanilla HTML/CSS/JS to start).
-├── resources/         # Downloaded sing-box.exe + wintun.dll (gitignored).
+├── resources/         # Downloaded sing-box.exe (sing-box-extended) + wintun.dll (gitignored).
 └── scripts/           # fetch-resources, build helpers.
 ```
 
@@ -42,10 +44,11 @@ Responsible for the data model and for **generating a complete sing-box config**
 - `singbox.rs` — `build_config(profile, split, settings) -> serde_json::Value` producing a
   full sing-box config:
   - `inbounds`: one `tun` inbound with `mtu` (default **1280**, configurable),
-    `auto_route: true`, `strict_route: true`, `stack: "system"`, and
-    `endpoint_independent_nat: false`.
-  - `outbounds`: the profile's proxy outbound(s) + a `direct` + a `block` + a `dns` outbound,
-    plus a `selector` so the UI can switch active server.
+    `auto_route: true`, `strict_route: true`, `stack: "system"`.
+  - `outbounds`: the profile's proxy outbound(s) (normalizing `xhttp` transports' camelCase
+    Xray field names to the snake_case `sing-box-extended` requires) + a `direct` outbound,
+    plus a `selector` so the UI can switch active server. There's no `block` outbound — it was
+    removed from sing-box upstream in 1.12.
   - `route`: rules implementing the split mode (map SplitRules to `process_name` /
     `process_path` / `domain_suffix` / `ip_cidr` → `direct` or the selector).
   - `experimental.clash_api`: `{ external_controller: "127.0.0.1:9090", secret: <random> }`

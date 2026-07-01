@@ -7,9 +7,10 @@
 ---
 
 Wisp is a modern Windows client for [sing-box](https://github.com/SagerNet/sing-box)-compatible
-servers (VLESS + REALITY / XHTTP, VLESS + Vision, Hysteria2). It wraps the battle-tested
-sing-box engine and wraps it in a clean Rust + Tauri app that fixes the two things that make
-other clients annoying:
+servers (VLESS + REALITY / XHTTP, VLESS + Vision, Hysteria2). It wraps
+[`shtorm-7/sing-box-extended`](https://github.com/shtorm-7/sing-box-extended) — a fork of
+mainline sing-box that adds the Xray transports mainline doesn't have, notably **XHTTP** — in a
+clean Rust + Tauri app that fixes the two things that make other clients annoying:
 
 - **🔀 Split tunneling that actually makes sense** — pick exactly which *apps* and *domains*
   go through the tunnel and which stay direct, from a simple UI.
@@ -17,9 +18,10 @@ other clients annoying:
 
 > **Why not a pure-Rust engine?** REALITY, XHTTP and Hysteria2 have no mature Rust
 > implementations — they live in Go (sing-box/Xray). Reimplementing them would be a
-> months-long, security-critical effort. Wisp instead embeds the audited sing-box engine and
-> spends its effort on the UX that's missing. The engine is hidden behind a Rust `Engine`
-> trait, so it can later be swapped for an embedded library and shared with an Android build.
+> months-long, security-critical effort. Wisp instead embeds the audited sing-box engine (the
+> `sing-box-extended` fork, for XHTTP support) and spends its effort on the UX that's missing.
+> The engine is hidden behind a Rust `Engine` trait, so it can later be swapped for an embedded
+> library and shared with an Android build.
 
 ## Status
 
@@ -74,4 +76,6 @@ cargo tauri dev
 
 ## License
 
-[MIT](LICENSE). Not affiliated with the sing-box project; sing-box is bundled under its own license.
+[MIT](LICENSE). Not affiliated with the sing-box project. Wisp bundles
+[`shtorm-7/sing-box-extended`](https://github.com/shtorm-7/sing-box-extended) as a separate
+executable under its own license (GPLv3) — see [`NOTICE.md`](NOTICE.md) for details.

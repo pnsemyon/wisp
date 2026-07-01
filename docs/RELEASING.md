@@ -7,7 +7,8 @@ the [`release.yml`](../.github/workflows/release.yml) GitHub Actions workflow.
 
 1. The workflow runs on `windows-latest`.
 2. [`scripts/fetch-resources.ps1`](../scripts/fetch-resources.ps1) downloads the
-   pinned `sing-box.exe` and `wintun.dll` into `resources/`.
+   pinned `sing-box.exe` (from the [`sing-box-extended`](https://github.com/shtorm-7/sing-box-extended)
+   fork — see [`NOTICE.md`](../NOTICE.md) for its license) and `wintun.dll` into `resources/`.
 3. [`tauri-action`](https://github.com/tauri-apps/tauri-action) runs
    `cargo tauri build` in `src-tauri/`, which:
    - compiles the Rust app,

@@ -1,11 +1,20 @@
 //! Build a complete sing-box configuration from a `Profile` and
 //! `SplitConfig`.
+//!
+//! Targets the sing-box 1.13 config schema: typed DNS servers, a
+//! `default_domain_resolver` on `route`, and no `block` outbound type
+//! (removed upstream in 1.12). The bundled engine is
+//! `shtorm-7/sing-box-extended`, a fork of mainline sing-box 1.13 (identical
+//! config schema otherwise) that adds Xray transports, including `xhttp`;
+//! see [`normalize_xhttp_transport`] for the camelCase-vs-snake_case wrinkle
+//! that transport requires. The older `splithttp` name is still not
+//! supported and is dropped.
 
 use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
-use crate::error::Result;
+use crate::error::{Result, WispError};
 use crate::profile::Profile;
 use crate::split::{SplitConfig, SplitMode, SplitRule};
 
@@ -34,8 +43,134 @@ impl Default for BuildSettings {
     }
 }
 
+/// `transport.type` values the bundled `sing-box-extended` engine supports.
+/// `xhttp` is included because the bundled fork implements it (mainline
+/// sing-box does not); outbounds using it are normalized by
+/// [`normalize_xhttp_transport`] before being emitted. Anything not in this
+/// list (notably the older Xray transport name `splithttp`, which the fork
+/// doesn't recognize either) is dropped with a `tracing::warn!`.
+const SUPPORTED_TRANSPORTS: &[&str] = &["http", "ws", "grpc", "httpupgrade", "quic", "xhttp"];
+
+/// Whether `outbound` uses a transport the bundled sing-box engine can run:
+/// no `transport` at all, or a `transport.type` in [`SUPPORTED_TRANSPORTS`].
+fn is_supported_outbound(outbound: &Value) -> bool {
+    match outbound.get("transport") {
+        None => true,
+        Some(transport) => transport
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| SUPPORTED_TRANSPORTS.contains(&t)),
+    }
+}
+
+fn tag_of(outbound: &Value) -> Option<String> {
+    outbound
+        .get("tag")
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+}
+
+fn transport_type_of(outbound: &Value) -> String {
+    outbound
+        .get("transport")
+        .and_then(|t| t.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// Split `outbounds` into the ones the bundled engine supports and a list of
+/// `(tag, transport_type)` pairs for the ones that were skipped.
+fn filter_supported_outbounds(outbounds: &[Value]) -> (Vec<Value>, Vec<(String, String)>) {
+    let mut supported = Vec::with_capacity(outbounds.len());
+    let mut skipped = Vec::new();
+    for outbound in outbounds {
+        if is_supported_outbound(outbound) {
+            supported.push(outbound.clone());
+        } else {
+            let tag = tag_of(outbound).unwrap_or_else(|| "<untagged>".to_string());
+            skipped.push((tag, transport_type_of(outbound)));
+        }
+    }
+    (supported, skipped)
+}
+
+/// Rename a camelCase identifier to snake_case: an underscore is inserted
+/// before each run of uppercase letters (except at the very start), and the
+/// whole thing is lowercased. Keys that are already snake_case (no
+/// uppercase letters) round-trip unchanged.
+///
+/// `xPaddingBytes` -> `x_padding_bytes`, `scMaxEachPostBytes` ->
+/// `sc_max_each_post_bytes`, `path` -> `path`.
+fn camel_to_snake(key: &str) -> String {
+    let mut out = String::with_capacity(key.len() + 4);
+    let mut prev_upper = false;
+    for (i, ch) in key.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if i > 0 && !prev_upper {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+            prev_upper = true;
+        } else {
+            out.push(ch);
+            prev_upper = false;
+        }
+    }
+    out
+}
+
+/// Normalize an `xhttp` `transport` object in place for the bundled
+/// `sing-box-extended` fork:
+///
+/// - Every key is renamed from camelCase to snake_case (see
+///   [`camel_to_snake`]), preserving values. This is needed because Xray
+///   (and share links / configs copied from Xray-based clients) use
+///   camelCase field names like `xPaddingBytes` and `scMaxEachPostBytes`,
+///   but the fork's xhttp implementation only recognizes the snake_case
+///   forms and silently ignores anything else.
+/// - After renaming, if `x_padding_bytes` is still absent, or present but
+///   empty/`"0"`, a standard anti-detection default (`"100-1000"`) is
+///   injected. The fork requires non-zero padding on xhttp transports and
+///   fails to start without it.
+///
+/// No-op if `transport` isn't a JSON object.
+fn normalize_xhttp_transport(transport: &mut Value) {
+    let Some(obj) = transport.as_object_mut() else {
+        return;
+    };
+
+    let renamed: Vec<(String, Value)> = obj
+        .iter()
+        .map(|(k, v)| (camel_to_snake(k), v.clone()))
+        .collect();
+    obj.clear();
+    for (key, value) in renamed {
+        obj.insert(key, value);
+    }
+
+    let needs_default = match obj.get("x_padding_bytes") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(s)) => s.is_empty() || s == "0",
+        _ => false,
+    };
+    if needs_default {
+        obj.insert(
+            "x_padding_bytes".to_string(),
+            Value::String("100-1000".to_string()),
+        );
+    }
+}
+
 /// Build a complete, ready-to-run sing-box config for `profile`, applying
 /// `split` tunneling rules and `settings`.
+///
+/// Outbounds whose transport isn't supported by the bundled engine (e.g.
+/// `splithttp`) are dropped; see [`is_supported_outbound`]. If that leaves
+/// zero outbounds, this returns an error rather than emitting a config with
+/// an empty selector. `xhttp` outbounds are supported and are normalized
+/// in place (camelCase Xray field names -> the fork's snake_case, plus a
+/// default padding value) by [`normalize_xhttp_transport`].
 pub fn build_config(
     profile: &Profile,
     split: &SplitConfig,
@@ -49,7 +184,40 @@ pub fn build_config(
         outbound_count = profile.outbounds.len(),
         "build_config: building sing-box config"
     );
-    let tags = profile.tags();
+
+    let (mut outbounds, skipped) = filter_supported_outbounds(&profile.outbounds);
+    for (tag, transport) in &skipped {
+        tracing::warn!(
+            tag = %tag,
+            transport = %transport,
+            "build_config: skipping outbound with unsupported transport"
+        );
+    }
+    if outbounds.is_empty() {
+        let mut transports: Vec<String> = skipped.into_iter().map(|(_, t)| t).collect();
+        transports.sort();
+        transports.dedup();
+        return Err(WispError::Other(format!(
+            "No outbounds are supported by the bundled sing-box engine (unsupported transports: {}). \
+             Use a Vision/Hysteria2/ws/grpc server instead.",
+            transports.join(", ")
+        )));
+    }
+
+    for outbound in outbounds.iter_mut() {
+        let is_xhttp = outbound
+            .get("transport")
+            .and_then(|t| t.get("type"))
+            .and_then(Value::as_str)
+            == Some("xhttp");
+        if is_xhttp {
+            if let Some(transport) = outbound.get_mut("transport") {
+                normalize_xhttp_transport(transport);
+            }
+        }
+    }
+
+    let tags: Vec<String> = outbounds.iter().filter_map(tag_of).collect();
     tracing::debug!(
         selector_tags = tags.len(),
         "build_config: selector outbound tags"
@@ -60,7 +228,6 @@ pub fn build_config(
         .filter(|t| tags.contains(t))
         .or_else(|| tags.first().cloned());
 
-    let mut outbounds: Vec<Value> = profile.outbounds.clone();
     outbounds.push(json!({
         "type": "selector",
         "tag": "proxy",
@@ -68,17 +235,15 @@ pub fn build_config(
         "default": default_tag,
     }));
     outbounds.push(json!({ "type": "direct", "tag": "direct" }));
-    outbounds.push(json!({ "type": "block", "tag": "block" }));
 
     let mut inbounds = vec![json!({
         "type": "tun",
         "tag": "tun-in",
-        "mtu": settings.mtu,
         "address": ["172.19.0.1/30"],
+        "mtu": settings.mtu,
         "auto_route": true,
         "strict_route": true,
         "stack": "system",
-        "endpoint_independent_nat": false,
     })];
     if let Some(port) = settings.socks_port {
         inbounds.push(json!({
@@ -95,8 +260,8 @@ pub fn build_config(
         "log": { "level": "info", "timestamp": true },
         "dns": {
             "servers": [
-                { "tag": "dns-remote", "address": "tls://8.8.8.8", "detour": "proxy" },
-                { "tag": "dns-local", "address": "local", "detour": "direct" }
+                { "type": "tls", "tag": "dns-remote", "server": "8.8.8.8", "detour": "proxy" },
+                { "type": "local", "tag": "dns-local" }
             ],
             "strategy": "prefer_ipv4"
         },
@@ -133,6 +298,7 @@ fn build_route(split: &SplitConfig) -> Value {
 
     json!({
         "auto_detect_interface": true,
+        "default_domain_resolver": "dns-local",
         "final": final_outbound,
         "rules": rules,
     })
@@ -164,10 +330,19 @@ mod tests {
     use super::*;
     use crate::parse::REAL_CONFIG_FIXTURE;
     use crate::split::SplitConfig;
+    use std::io::Write;
+    use std::process::Command;
 
     fn fixture_profile() -> Profile {
         crate::parse::import(REAL_CONFIG_FIXTURE).expect("fixture should import")
     }
+
+    /// Tag of fixture outbound 0: vless+xhttp (supported by the bundled fork).
+    const XHTTP_TAG: &str = "Bulgaria, Sophia-7w1t0rtt5a § 0";
+    /// Tag of fixture outbound 1: vless+Vision, no transport (supported).
+    const VISION_TAG: &str = "Bulgaria, Sophia-7w1t0rtt5a § 1";
+    /// Tag of fixture outbound 2: hysteria2 (supported).
+    const HYSTERIA2_TAG: &str = "Bulgaria, Sophia, hysteria-7w1t0rtt5a § 2";
 
     #[test]
     fn has_one_tun_inbound_with_configured_mtu() {
@@ -186,17 +361,95 @@ mod tests {
         assert_eq!(tun_inbounds[0]["auto_route"], true);
         assert_eq!(tun_inbounds[0]["strict_route"], true);
         assert_eq!(tun_inbounds[0]["stack"], "system");
-        assert_eq!(tun_inbounds[0]["endpoint_independent_nat"], false);
+        assert_eq!(tun_inbounds[0]["address"], json!(["172.19.0.1/30"]));
+        // sing-box 1.13 dropped this field from the tun inbound schema.
+        assert!(tun_inbounds[0].get("endpoint_independent_nat").is_none());
     }
 
     #[test]
-    fn selector_contains_all_three_tags_and_clash_api_present() {
+    fn dns_uses_new_typed_server_schema() {
+        let profile = fixture_profile();
+        let split = SplitConfig::default();
+        let settings = BuildSettings::default();
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+
+        let servers = config["dns"]["servers"].as_array().expect("servers array");
+        assert_eq!(servers.len(), 2);
+
+        let remote = servers
+            .iter()
+            .find(|s| s["tag"] == "dns-remote")
+            .expect("dns-remote present");
+        assert_eq!(remote["type"], "tls");
+        assert_eq!(remote["server"], "8.8.8.8");
+        assert_eq!(remote["detour"], "proxy");
+        // The legacy `address` field is gone in the new schema.
+        assert!(remote.get("address").is_none());
+
+        let local = servers
+            .iter()
+            .find(|s| s["tag"] == "dns-local")
+            .expect("dns-local present");
+        assert_eq!(local["type"], "local");
+        assert!(local.get("address").is_none());
+
+        assert_eq!(config["dns"]["strategy"], "prefer_ipv4");
+    }
+
+    #[test]
+    fn route_has_default_domain_resolver() {
+        let profile = fixture_profile();
+        let split = SplitConfig::default();
+        let settings = BuildSettings::default();
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+
+        assert_eq!(config["route"]["default_domain_resolver"], "dns-local");
+        assert_eq!(config["route"]["auto_detect_interface"], true);
+    }
+
+    #[test]
+    fn no_block_outbound_is_ever_emitted() {
         let profile = fixture_profile();
         let split = SplitConfig::default();
         let settings = BuildSettings::default();
         let config = build_config(&profile, &split, &settings).expect("build should succeed");
 
         let outbounds = config["outbounds"].as_array().expect("outbounds array");
+        assert!(
+            !outbounds.iter().any(|o| o["type"] == "block"),
+            "block outbound type was removed in sing-box 1.12 and must never be emitted"
+        );
+    }
+
+    #[test]
+    fn xhttp_vision_and_hysteria2_all_kept_and_xhttp_normalized() {
+        let profile = fixture_profile();
+        let split = SplitConfig::default();
+        let settings = BuildSettings::default();
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+
+        let outbounds = config["outbounds"].as_array().expect("outbounds array");
+        assert!(
+            outbounds.iter().any(|o| o["tag"] == XHTTP_TAG),
+            "xhttp outbound is supported by the bundled fork and must be kept"
+        );
+        assert!(outbounds.iter().any(|o| o["tag"] == VISION_TAG));
+        assert!(outbounds.iter().any(|o| o["tag"] == HYSTERIA2_TAG));
+
+        let xhttp_outbound = outbounds
+            .iter()
+            .find(|o| o["tag"] == XHTTP_TAG)
+            .expect("xhttp outbound present");
+        let transport = &xhttp_outbound["transport"];
+        assert_eq!(transport["type"], "xhttp");
+        // The fixture supplies Xray camelCase field names; build_config must
+        // rename them to the snake_case the bundled fork requires, with
+        // values preserved.
+        assert_eq!(transport["x_padding_bytes"], "100-1000");
+        assert_eq!(transport["sc_max_each_post_bytes"], "1000000-1000000");
+        assert!(transport.get("xPaddingBytes").is_none());
+        assert!(transport.get("scMaxEachPostBytes").is_none());
+
         let selector = outbounds
             .iter()
             .find(|o| o["type"] == "selector" && o["tag"] == "proxy")
@@ -207,24 +460,96 @@ mod tests {
             .iter()
             .map(|v| v.as_str().expect("tag is string").to_string())
             .collect();
-
         assert_eq!(selector_tags.len(), 3);
-        assert!(selector_tags.contains(&"Bulgaria, Sophia-7w1t0rtt5a § 0".to_string()));
-        assert!(selector_tags.contains(&"Bulgaria, Sophia-7w1t0rtt5a § 1".to_string()));
-        assert!(selector_tags.contains(&"Bulgaria, Sophia, hysteria-7w1t0rtt5a § 2".to_string()));
-        assert_eq!(selector["default"], "Bulgaria, Sophia-7w1t0rtt5a § 0");
+        assert!(selector_tags.contains(&XHTTP_TAG.to_string()));
+        assert!(selector_tags.contains(&VISION_TAG.to_string()));
+        assert!(selector_tags.contains(&HYSTERIA2_TAG.to_string()));
+    }
+
+    #[test]
+    fn selector_default_prefers_active_tag_now_that_xhttp_is_supported() {
+        // The fixture's active_tag is the xhttp outbound (first in the
+        // list). Now that xhttp is a supported transport, build_config must
+        // keep it as the selector default instead of falling back.
+        let profile = fixture_profile();
+        assert_eq!(profile.active_tag.as_deref(), Some(XHTTP_TAG));
+
+        let split = SplitConfig::default();
+        let settings = BuildSettings::default();
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+
+        let outbounds = config["outbounds"].as_array().expect("outbounds array");
+        let selector = outbounds
+            .iter()
+            .find(|o| o["type"] == "selector" && o["tag"] == "proxy")
+            .expect("selector outbound present");
+        assert_eq!(selector["default"], XHTTP_TAG);
 
         assert!(outbounds
             .iter()
             .any(|o| o["type"] == "direct" && o["tag"] == "direct"));
-        assert!(outbounds
-            .iter()
-            .any(|o| o["type"] == "block" && o["tag"] == "block"));
+        assert!(!outbounds.iter().any(|o| o["type"] == "block"));
 
         assert_eq!(
             config["experimental"]["clash_api"]["external_controller"],
             "127.0.0.1:9090"
         );
+    }
+
+    #[test]
+    fn all_outbounds_unsupported_is_an_error() {
+        // `splithttp` is the old Xray transport name; the bundled fork only
+        // recognizes the current name, `xhttp`, so this is still genuinely
+        // unsupported and should still produce an error.
+        let outbounds = vec![json!({
+            "type": "vless",
+            "tag": "only-splithttp",
+            "server": "203.0.113.10",
+            "server_port": 443,
+            "uuid": "11111111-2222-3333-4444-555555555555",
+            "transport": { "type": "splithttp", "mode": "auto" }
+        })];
+        let profile = Profile::new("only unsupported", outbounds, &[]);
+        let split = SplitConfig::default();
+        let settings = BuildSettings::default();
+
+        let err = build_config(&profile, &split, &settings).expect_err("should error");
+        let message = err.to_string();
+        assert!(message.contains("splithttp"), "message was: {message}");
+        assert!(
+            message.contains("No outbounds are supported"),
+            "message was: {message}"
+        );
+    }
+
+    #[test]
+    fn splithttp_transport_is_also_excluded() {
+        let outbounds = vec![
+            json!({
+                "type": "vless",
+                "tag": "splithttp-out",
+                "server": "203.0.113.10",
+                "server_port": 443,
+                "uuid": "11111111-2222-3333-4444-555555555555",
+                "transport": { "type": "splithttp", "mode": "auto" }
+            }),
+            json!({
+                "type": "vless",
+                "tag": "ws-out",
+                "server": "203.0.113.10",
+                "server_port": 443,
+                "uuid": "11111111-2222-3333-4444-555555555555",
+                "transport": { "type": "ws", "path": "/" }
+            }),
+        ];
+        let profile = Profile::new("mixed", outbounds, &[]);
+        let split = SplitConfig::default();
+        let settings = BuildSettings::default();
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+
+        let outbounds = config["outbounds"].as_array().expect("outbounds array");
+        assert!(!outbounds.iter().any(|o| o["tag"] == "splithttp-out"));
+        assert!(outbounds.iter().any(|o| o["tag"] == "ws-out"));
     }
 
     #[test]
@@ -335,5 +660,151 @@ mod tests {
         assert_eq!(rules[1]["action"], "hijack-dns");
         assert_eq!(rules[2]["ip_is_private"], true);
         assert_eq!(rules[2]["outbound"], "direct");
+    }
+
+    /// Real-binary gate: only runs when `SINGBOX_BIN` points at a sing-box
+    /// executable, so CI (which has no binary available) stays green.
+    ///
+    /// Run locally with:
+    /// ```text
+    /// SINGBOX_BIN=/path/to/sing-box cargo test -p wisp-core
+    /// ```
+    #[test]
+    fn generated_configs_pass_real_singbox_check() {
+        let Ok(bin) = std::env::var("SINGBOX_BIN") else {
+            eprintln!(
+                "skipping generated_configs_pass_real_singbox_check: SINGBOX_BIN not set \
+                 (set it to a sing-box binary path to run this gate)"
+            );
+            return;
+        };
+
+        let profile = fixture_profile();
+        let settings = BuildSettings::default();
+        let modes = [
+            ("off", SplitConfig::default()),
+            (
+                "exclude",
+                SplitConfig {
+                    mode: SplitMode::Exclude,
+                    rules: vec![SplitRule::Process("chrome.exe".to_string())],
+                },
+            ),
+            (
+                "include",
+                SplitConfig {
+                    mode: SplitMode::Include,
+                    rules: vec![SplitRule::Process("chrome.exe".to_string())],
+                },
+            ),
+        ];
+
+        let dir = std::env::temp_dir().join(format!(
+            "wisp-singbox-check-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir for config check");
+
+        for (name, split) in &modes {
+            let config = build_config(&profile, split, &settings).expect("build should succeed");
+            let path = dir.join(format!("{name}.json"));
+            let mut file = std::fs::File::create(&path).expect("create config file");
+            file.write_all(
+                serde_json::to_string_pretty(&config)
+                    .expect("serialize config")
+                    .as_bytes(),
+            )
+            .expect("write config file");
+
+            let output = Command::new(&bin)
+                .arg("check")
+                .arg("-c")
+                .arg(&path)
+                .output()
+                .unwrap_or_else(|err| panic!("failed to run {bin} check: {err}"));
+
+            assert!(
+                output.status.success(),
+                "sing-box check failed for {name} mode:\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn camel_to_snake_converts_xray_field_names() {
+        assert_eq!(camel_to_snake("xPaddingBytes"), "x_padding_bytes");
+        assert_eq!(
+            camel_to_snake("scMaxEachPostBytes"),
+            "sc_max_each_post_bytes"
+        );
+        assert_eq!(
+            camel_to_snake("scMaxBufferedPosts"),
+            "sc_max_buffered_posts"
+        );
+        // Already-snake_case (and plain lowercase) keys pass through unchanged.
+        assert_eq!(camel_to_snake("path"), "path");
+        assert_eq!(camel_to_snake("x_padding_bytes"), "x_padding_bytes");
+    }
+
+    #[test]
+    fn normalize_xhttp_transport_renames_camel_case_keys_and_preserves_values() {
+        let mut transport = json!({
+            "type": "xhttp",
+            "mode": "auto",
+            "path": "/",
+            "xPaddingBytes": "50-100",
+            "scMaxEachPostBytes": "1000000-1000000"
+        });
+
+        normalize_xhttp_transport(&mut transport);
+
+        assert_eq!(transport["type"], "xhttp");
+        assert_eq!(transport["mode"], "auto");
+        assert_eq!(transport["path"], "/");
+        assert_eq!(transport["x_padding_bytes"], "50-100");
+        assert_eq!(transport["sc_max_each_post_bytes"], "1000000-1000000");
+        assert!(transport.get("xPaddingBytes").is_none());
+        assert!(transport.get("scMaxEachPostBytes").is_none());
+    }
+
+    #[test]
+    fn normalize_xhttp_transport_injects_default_padding_when_missing() {
+        let mut transport = json!({ "type": "xhttp", "mode": "auto", "path": "/" });
+        normalize_xhttp_transport(&mut transport);
+        assert_eq!(transport["x_padding_bytes"], "100-1000");
+    }
+
+    #[test]
+    fn normalize_xhttp_transport_injects_default_padding_when_empty_or_zero() {
+        let mut empty = json!({ "type": "xhttp", "xPaddingBytes": "" });
+        normalize_xhttp_transport(&mut empty);
+        assert_eq!(empty["x_padding_bytes"], "100-1000");
+
+        let mut zero = json!({ "type": "xhttp", "xPaddingBytes": "0" });
+        normalize_xhttp_transport(&mut zero);
+        assert_eq!(zero["x_padding_bytes"], "100-1000");
+    }
+
+    #[test]
+    fn normalize_xhttp_transport_leaves_already_snake_case_input_unchanged() {
+        let mut transport = json!({
+            "type": "xhttp",
+            "mode": "auto",
+            "x_padding_bytes": "200-500",
+            "sc_max_each_post_bytes": "2000000-2000000"
+        });
+        let expected = transport.clone();
+
+        normalize_xhttp_transport(&mut transport);
+
+        assert_eq!(transport, expected);
     }
 }

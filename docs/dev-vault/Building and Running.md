@@ -37,13 +37,16 @@ adapter creation).
 ./scripts/fetch-resources.ps1        # PowerShell — native Windows
 ```
 
-Both:
-1. Resolve the latest sing-box release from GitHub (or use a version passed as an argument /
-   `-SingboxVersion`).
-2. Download `sing-box-<version>-windows-amd64.zip` and extract `sing-box.exe` into
-   `resources/`.
+The bundled engine is [`shtorm-7/sing-box-extended`](https://github.com/shtorm-7/sing-box-extended)
+— a fork of mainline sing-box that adds Xray transports (notably XHTTP) on top of the same
+config schema. Both scripts:
+1. Use the pinned tag (`v1.13.14-extended-2.5.0`) by default, or a tag passed as an argument /
+   `-SingboxTag` (pass an empty string to resolve the latest `sing-box-extended` release from
+   GitHub instead).
+2. Download `sing-box-<asset-version>-windows-amd64.zip` from that fork's releases and extract
+   `sing-box.exe` into `resources/`.
 3. Download a pinned Wintun build (`0.14.1`) and extract `wintun.dll` into `resources/`.
-4. Record the resolved sing-box version in `resources/.singbox-version`.
+4. Record the resolved sing-box asset version in `resources/.singbox-version`.
 
 Note both scripts always fetch the **Windows amd64** sing-box build — Wisp is a Windows app, so
 even if you run `fetch-resources.sh` from Linux/WSL to stage resources for a later Windows

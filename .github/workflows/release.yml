@@ -38,6 +38,8 @@ jobs:
       - name: Fetch engine resources
         run: ./scripts/fetch-resources.ps1
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build app and publish release
         uses: tauri-apps/tauri-action@v0

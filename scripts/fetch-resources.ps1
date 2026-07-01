@@ -14,7 +14,11 @@ $WintunVersion = "0.14.1"
 
 if ([string]::IsNullOrEmpty($SingboxVersion)) {
     Write-Host "Resolving latest sing-box release..."
-    $rel = Invoke-RestMethod "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+    # Authenticate the API call when a token is available (e.g. in CI) so we
+    # don't hit GitHub's low unauthenticated rate limit on shared runner IPs.
+    $headers = @{ "User-Agent" = "wisp-fetch-resources" }
+    if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN" }
+    $rel = Invoke-RestMethod "https://api.github.com/repos/SagerNet/sing-box/releases/latest" -Headers $headers
     $SingboxVersion = $rel.tag_name.TrimStart("v")
 }
 $SingboxVersion = $SingboxVersion.TrimStart("v")

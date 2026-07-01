@@ -17,7 +17,13 @@ need unzip
 
 if [ -z "$SINGBOX_VERSION" ]; then
   echo "Resolving latest sing-box release..."
-  SINGBOX_VERSION="$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest \
+  # Authenticate the API call when a token is available (e.g. in CI) so we don't
+  # hit GitHub's low unauthenticated rate limit on shared runner IPs.
+  api_auth=()
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    api_auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  fi
+  SINGBOX_VERSION="$(curl -fsSL "${api_auth[@]}" https://api.github.com/repos/SagerNet/sing-box/releases/latest \
     | grep -oE '"tag_name": *"v[^"]+"' | head -1 | grep -oE 'v[0-9][^"]+')"
 fi
 SINGBOX_VERSION="${SINGBOX_VERSION#v}"

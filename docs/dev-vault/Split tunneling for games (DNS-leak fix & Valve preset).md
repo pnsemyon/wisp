@@ -48,8 +48,45 @@ Ranges came from RIPEstat announced-prefixes for AS32590:
   see per-connection routing when diagnosing leaks).
 - Split/settings changes now **force a live reconnect** so they apply immediately.
 
+## Update (2026-07-02): the REAL root cause — DNS resolver path
+
+v0.1.2 shipped the reordering + preset, user retested, **still broke**. Read the
+user's actual log (`%LOCALAPPDATA%/Wisp/logs/`, readable from WSL at
+`/mnt/c/Users/Semyon/AppData/...`) — the routing was already correct:
+
+- **61 outbound connections, all `outbound/direct`, zero proxied.** The IP-CIDR
+  preset worked: game HTTPS to `155.133.252.x` / `162.254.197.x` went direct.
+- **But every DNS lookup took 10–37 seconds** (`dns: exchanged A ... [36.9s]`,
+  `[30.74s]`, `[29.36s]`...). All DNS went to `dns-remote` (8.8.8.8 DoT,
+  `detour: proxy`) — i.e. through the xhttp/REALITY tunnel to Bulgaria. Steam's
+  relay-latency negotiation times out long before a 30 s answer → "cannot
+  determine latency". Also `p2p-waw1.discovery.steamserver.net` (Warsaw)
+  confirmed the resolver was geolocated to the exit.
+
+**The gap:** the earlier fix corrected *route* ordering (excluded traffic goes
+direct) but the config had **no `dns.rules`** — so excluded domains still
+resolved via the slow proxied resolver.
+
+**Fix (v0.1.3, `singbox.rs::build_dns`):** direct-routed domains/apps now resolve
+via `dns-local`.
+- sing-box resolves an unmatched query with the **first** server in the list, so
+  server order encodes the default resolver per mode.
+- **Blacklist**: servers `[dns-remote, dns-local]` (default = proxy); excluded
+  domain/process rules pinned to `dns-local`.
+- **Whitelist**: servers `[dns-local, dns-remote]` (default = local); only
+  whitelisted domain/process rules pinned to `dns-remote`.
+- `ip_cidr` rules are skipped for DNS (can't match a query by unresolved dest IP).
+Validated Off/Blacklist/Whitelist with `sing-box check`; `process_name` IS
+accepted in dns rules by the fork.
+
+## Also (2026-07-02): in-place-upgrade bug is worse than noted
+The stale-binary bug ([[Bug - Stale app binary on in-place upgrade]]) requires
+killing **both** `wisp-app.exe` AND `sing-box.exe` before reinstall — the running
+engine also locks files. The eventual installer hook (task #16) must terminate
+both processes.
+
 ## Still uncertain (needs on-machine verification)
 Whether process-matching alone ever reliably catches the game's UDP on Windows is
 unproven — the IP-range preset is the robust path. Confirm from the user's log
-(with `log_level=debug`) that game flows show `outbound/direct` after applying the
-preset.
+(with `log_level=debug`) that game DNS now shows sub-second lookups and
+`outbound/direct` after applying the preset on v0.1.3.

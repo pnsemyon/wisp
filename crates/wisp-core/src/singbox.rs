@@ -259,16 +259,11 @@ pub fn build_config(
     }
 
     let route = build_route(split);
+    let dns = build_dns(split);
 
     Ok(json!({
         "log": { "level": settings.log_level, "timestamp": true },
-        "dns": {
-            "servers": [
-                { "type": "tls", "tag": "dns-remote", "server": "8.8.8.8", "detour": "proxy" },
-                { "type": "local", "tag": "dns-local" }
-            ],
-            "strategy": "prefer_ipv4"
-        },
+        "dns": dns,
         "inbounds": inbounds,
         "outbounds": outbounds,
         "route": route,
@@ -279,6 +274,73 @@ pub fn build_config(
             }
         }
     }))
+}
+
+/// Build the `dns` section. The subtlety that actually makes split tunneling
+/// *work* for latency-sensitive apps: a direct-routed app must ALSO resolve
+/// its domains via the local resolver, not the proxied one. Otherwise the app
+/// gets an answer geolocated to the proxy exit (e.g. Steam hands out
+/// Warsaw/Bulgaria relays) and — worse — pays the proxy's DNS round-trip,
+/// which over an xhttp/REALITY tunnel to a distant VPS was observed at
+/// 10–37s per lookup, long enough for Steam to give up ("cannot determine
+/// latency"). So:
+///
+/// - **Blacklist**: unmatched queries use the proxied resolver (first server);
+///   excluded (direct) domains/apps are pinned to `dns-local`.
+/// - **Whitelist**: unmatched queries use `dns-local` (first server); only the
+///   whitelisted (proxied) domains/apps are pinned to `dns-remote`.
+/// - **Off**: everything uses the proxied resolver.
+///
+/// `ip_cidr` rules are skipped here — you can't match a DNS query by the
+/// destination IP it hasn't resolved yet; those only steer routing.
+fn build_dns(split: &SplitConfig) -> Value {
+    let remote =
+        json!({ "type": "tls", "tag": "dns-remote", "server": "8.8.8.8", "detour": "proxy" });
+    let local = json!({ "type": "local", "tag": "dns-local" });
+
+    // sing-box resolves an unmatched query with the FIRST server in the list,
+    // so server order encodes the default resolver for each mode.
+    let (servers, rules): (Vec<Value>, Vec<Value>) = match split.mode {
+        SplitMode::Off => (vec![remote, local], Vec::new()),
+        SplitMode::Blacklist => (
+            vec![remote, local],
+            dns_rule_group(&split.rules, "dns-local"),
+        ),
+        SplitMode::Whitelist => (
+            vec![local, remote],
+            dns_rule_group(&split.rules, "dns-remote"),
+        ),
+    };
+
+    let mut dns = json!({ "servers": servers, "strategy": "prefer_ipv4" });
+    if !rules.is_empty() {
+        dns["rules"] = Value::Array(rules);
+    }
+    dns
+}
+
+/// Like [`rule_group`] but for DNS rules: emits `server` instead of `outbound`
+/// and drops `ip_cidr` rules (a DNS query can't be matched by a destination IP
+/// it hasn't resolved yet).
+fn dns_rule_group(rules: &[SplitRule], server: &str) -> Vec<Value> {
+    let mut grouped: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+    for rule in rules {
+        let (field, value) = rule.field();
+        if field == "ip_cidr" {
+            continue;
+        }
+        grouped.entry(field).or_default().push(value.to_string());
+    }
+
+    grouped
+        .into_iter()
+        .map(|(field, values)| {
+            json!({
+                field: values,
+                "server": server,
+            })
+        })
+        .collect()
 }
 
 fn build_route(split: &SplitConfig) -> Value {
@@ -690,6 +752,73 @@ mod tests {
         assert!(hijack_idx < private_idx);
         assert_eq!(rules[process_idx]["outbound"], "direct");
         assert_eq!(config["route"]["final"], "proxy");
+    }
+
+    #[test]
+    fn blacklist_excluded_domains_and_apps_resolve_via_local_dns() {
+        // The other half of the split-tunnel fix: a direct-routed app must
+        // also resolve via the LOCAL resolver. Otherwise its DNS goes through
+        // the proxy (geolocated to the exit, and pathologically slow over a
+        // distant tunnel), so e.g. Steam can't determine relay latency.
+        let profile = fixture_profile();
+        let split = SplitConfig {
+            mode: SplitMode::Blacklist,
+            rules: vec![
+                SplitRule::DomainSuffix("steamserver.net".to_string()),
+                SplitRule::Process("dota2.exe".to_string()),
+                // ip_cidr rules must NOT appear as DNS rules.
+                SplitRule::IpCidr("155.133.230.0/24".to_string()),
+            ],
+        };
+        let settings = BuildSettings::default();
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+        let dns = &config["dns"];
+
+        // Default resolver (first server) stays the proxied one.
+        assert_eq!(dns["servers"][0]["tag"], "dns-remote");
+
+        let rules = dns["rules"].as_array().expect("dns rules present");
+        let domain_rule = rules
+            .iter()
+            .find(|r| r.get("domain_suffix").is_some())
+            .expect("excluded domain has a dns rule");
+        assert_eq!(domain_rule["server"], "dns-local");
+        let proc_rule = rules
+            .iter()
+            .find(|r| r.get("process_name").is_some())
+            .expect("excluded process has a dns rule");
+        assert_eq!(proc_rule["server"], "dns-local");
+        // ip_cidr can't match a DNS query, so it must never become a dns rule.
+        assert!(rules.iter().all(|r| r.get("ip_cidr").is_none()));
+    }
+
+    #[test]
+    fn whitelist_defaults_to_local_dns_and_proxies_only_listed_domains() {
+        let profile = fixture_profile();
+        let split = SplitConfig {
+            mode: SplitMode::Whitelist,
+            rules: vec![SplitRule::DomainSuffix("example.com".to_string())],
+        };
+        let settings = BuildSettings::default();
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+        let dns = &config["dns"];
+
+        // Default resolver (first server) is local; only whitelisted domains
+        // go through the proxied resolver.
+        assert_eq!(dns["servers"][0]["tag"], "dns-local");
+        let rules = dns["rules"].as_array().expect("dns rules present");
+        assert_eq!(rules[0]["domain_suffix"][0], "example.com");
+        assert_eq!(rules[0]["server"], "dns-remote");
+    }
+
+    #[test]
+    fn off_mode_emits_no_dns_rules() {
+        let profile = fixture_profile();
+        let split = SplitConfig::default();
+        let settings = BuildSettings::default();
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+        assert!(config["dns"].get("rules").is_none());
+        assert_eq!(config["dns"]["servers"][0]["tag"], "dns-remote");
     }
 
     #[test]

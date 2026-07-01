@@ -68,13 +68,22 @@ mod tests {
 
     #[test]
     fn field_mapping() {
-        assert_eq!(SplitRule::Process("chrome.exe".into()).field(), ("process_name", "chrome.exe"));
+        assert_eq!(
+            SplitRule::Process("chrome.exe".into()).field(),
+            ("process_name", "chrome.exe")
+        );
         assert_eq!(
             SplitRule::ProcessPath("C:\\a.exe".into()).field(),
             ("process_path", "C:\\a.exe")
         );
-        assert_eq!(SplitRule::DomainSuffix("x.com".into()).field(), ("domain_suffix", "x.com"));
-        assert_eq!(SplitRule::IpCidr("1.2.3.0/24".into()).field(), ("ip_cidr", "1.2.3.0/24"));
+        assert_eq!(
+            SplitRule::DomainSuffix("x.com".into()).field(),
+            ("domain_suffix", "x.com")
+        );
+        assert_eq!(
+            SplitRule::IpCidr("1.2.3.0/24".into()).field(),
+            ("ip_cidr", "1.2.3.0/24")
+        );
     }
 
     #[test]
@@ -85,6 +94,9 @@ mod tests {
 
         let rule = SplitRule::Process("chrome.exe".into());
         let json = serde_json::to_value(&rule).expect("serialize");
-        assert_eq!(json, serde_json::json!({"kind": "process", "value": "chrome.exe"}));
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "process", "value": "chrome.exe"})
+        );
     }
 }

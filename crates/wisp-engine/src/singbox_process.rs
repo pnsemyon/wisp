@@ -14,6 +14,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+use tracing::{debug, error, info, warn};
 
 use crate::clash_api::ClashApi;
 use crate::engine::{Engine, EngineState, EngineStatus, TrafficStats};
@@ -115,6 +116,14 @@ impl SingBoxProcess {
             .await
             .context("writing config.json")?;
 
+        info!(
+            binary = %self.binary.display(),
+            work_dir = %self.work_dir.display(),
+            config = %config_path.display(),
+            args = ?self.args,
+            "singbox_process: spawning sing-box"
+        );
+
         let mut cmd = Command::new(&self.binary);
         cmd.args(&self.args)
             .current_dir(&self.work_dir)
@@ -122,17 +131,31 @@ impl SingBoxProcess {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        let mut child = cmd.spawn().context("spawning sing-box process")?;
+        let mut child = match cmd.spawn().context("spawning sing-box process") {
+            Ok(child) => child,
+            Err(err) => {
+                error!(binary = %self.binary.display(), %err, "singbox_process: spawn failed");
+                return Err(err);
+            }
+        };
 
         if let Some(stdout) = child.stdout.take() {
-            spawn_log_reader(stdout, self.logs.clone());
+            spawn_log_reader(stdout, self.logs.clone(), false);
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_log_reader(stderr, self.logs.clone());
+            spawn_log_reader(stderr, self.logs.clone(), true);
         }
 
         if self.health_check {
-            self.wait_for_health(&mut child).await?;
+            let started = Instant::now();
+            if let Err(err) = self.wait_for_health(&mut child).await {
+                error!(%err, "singbox_process: health check failed");
+                return Err(err);
+            }
+            info!(
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "singbox_process: sing-box is healthy"
+            );
         }
 
         Ok(child)
@@ -148,8 +171,15 @@ impl SingBoxProcess {
             if let Some(status) = child.try_wait().context("polling child status")? {
                 anyhow::bail!("sing-box exited early with status {status}");
             }
-            if self.clash.version().await.is_ok() {
-                return Ok(());
+            debug!(attempt, "singbox_process: health check attempt");
+            match self.clash.version().await {
+                Ok(version) => {
+                    debug!(version, attempt, "singbox_process: health check succeeded");
+                    return Ok(());
+                }
+                Err(err) => {
+                    debug!(attempt, %err, "singbox_process: health check attempt failed");
+                }
             }
             if attempt + 1 < ATTEMPTS {
                 sleep(delay).await;
@@ -163,13 +193,21 @@ impl SingBoxProcess {
 
 /// Read `reader` line by line into `logs`, dropping the oldest line once the
 /// ring buffer is full. Runs until EOF (i.e. until the child's pipe closes).
-fn spawn_log_reader<R>(reader: R, logs: Arc<Mutex<VecDeque<String>>>)
+/// Also forwards every line to `tracing` under `target: "singbox"` (info for
+/// stdout, warn for stderr) so sing-box's own logging shows up in Wisp's log
+/// file, in addition to the in-memory ring buffer the UI reads from.
+fn spawn_log_reader<R>(reader: R, logs: Arc<Mutex<VecDeque<String>>>, is_stderr: bool)
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            if is_stderr {
+                tracing::warn!(target: "singbox", "{line}");
+            } else {
+                tracing::info!(target: "singbox", "{line}");
+            }
             let mut logs = logs.lock().await;
             if logs.len() >= LOG_RING_CAPACITY {
                 logs.pop_front();
@@ -182,6 +220,7 @@ where
 #[async_trait]
 impl Engine for SingBoxProcess {
     async fn start(&self, config: Value) -> Result<()> {
+        let started = Instant::now();
         {
             let mut state = self.state.lock().await;
             state.engine_state = EngineState::Starting;
@@ -199,12 +238,17 @@ impl Engine for SingBoxProcess {
                 state.engine_state = EngineState::Running;
                 state.since_unix = since_unix;
                 state.last_sample = None;
+                info!(
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "singbox_process: transitioned to Running"
+                );
                 Ok(())
             }
             Err(err) => {
                 let mut state = self.state.lock().await;
                 state.engine_state = EngineState::Errored;
                 state.last_error = Some(err.to_string());
+                error!(%err, "singbox_process: start failed");
                 Err(err)
             }
         }
@@ -212,9 +256,15 @@ impl Engine for SingBoxProcess {
 
     async fn stop(&self) -> Result<()> {
         let mut state = self.state.lock().await;
+        let had_child = state.child.is_some();
+        info!(had_child, "singbox_process: stopping");
         if let Some(mut child) = state.child.take() {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
+            if let Err(err) = child.start_kill() {
+                warn!(%err, "singbox_process: failed to signal child kill");
+            }
+            if let Err(err) = child.wait().await {
+                warn!(%err, "singbox_process: failed to wait for child exit");
+            }
         }
         state.engine_state = EngineState::Stopped;
         state.since_unix = None;
@@ -233,15 +283,29 @@ impl Engine for SingBoxProcess {
     }
 
     async fn stats(&self) -> Result<TrafficStats> {
-        let snapshot = self.clash.connections().await.context("querying /connections")?;
+        debug!("singbox_process: stats requested");
+        let snapshot = match self
+            .clash
+            .connections()
+            .await
+            .context("querying /connections")
+        {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                error!(%err, "singbox_process: stats failed");
+                return Err(err);
+            }
+        };
         let now = Instant::now();
 
         let mut state = self.state.lock().await;
         let (up_speed, down_speed) = match state.last_sample {
             Some((prev_up, prev_down, prev_time)) => {
                 let elapsed = now.duration_since(prev_time).as_secs_f64().max(0.001);
-                let up_speed = (snapshot.upload_total.saturating_sub(prev_up) as f64 / elapsed) as u64;
-                let down_speed = (snapshot.download_total.saturating_sub(prev_down) as f64 / elapsed) as u64;
+                let up_speed =
+                    (snapshot.upload_total.saturating_sub(prev_up) as f64 / elapsed) as u64;
+                let down_speed =
+                    (snapshot.download_total.saturating_sub(prev_down) as f64 / elapsed) as u64;
                 (up_speed, down_speed)
             }
             None => (0, 0),
@@ -263,10 +327,16 @@ impl Engine for SingBoxProcess {
     }
 
     async fn switch(&self, tag: &str) -> Result<()> {
-        self.clash
+        debug!(tag, "singbox_process: switch requested");
+        if let Err(err) = self
+            .clash
             .switch_selector("proxy", tag)
             .await
-            .context("switching selector")?;
+            .context("switching selector")
+        {
+            error!(tag, %err, "singbox_process: switch failed");
+            return Err(err);
+        }
         let mut state = self.state.lock().await;
         state.active_tag = Some(tag.to_string());
         Ok(())

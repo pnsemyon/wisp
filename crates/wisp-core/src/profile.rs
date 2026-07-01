@@ -93,7 +93,10 @@ mod tests {
 
     #[test]
     fn slugify_basic() {
-        assert_eq!(slugify("Bulgaria, Sophia-7w1t0rtt5a"), "bulgaria-sophia-7w1t0rtt5a");
+        assert_eq!(
+            slugify("Bulgaria, Sophia-7w1t0rtt5a"),
+            "bulgaria-sophia-7w1t0rtt5a"
+        );
         assert_eq!(slugify("   "), "profile");
         assert_eq!(slugify("A/B/C"), "a-b-c");
     }
@@ -109,7 +112,10 @@ mod tests {
     fn tags_reads_outbound_tags() {
         let profile = Profile::new(
             "test",
-            vec![json!({"type": "vless", "tag": "a"}), json!({"type": "direct"})],
+            vec![
+                json!({"type": "vless", "tag": "a"}),
+                json!({"type": "direct"}),
+            ],
             &[],
         );
         assert_eq!(profile.tags(), vec!["a".to_string()]);

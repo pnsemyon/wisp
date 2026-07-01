@@ -21,11 +21,21 @@ pub fn import(text: &str) -> Result<Profile> {
     if text.is_empty() {
         return Err(WispError::Parse("input is empty".to_string()));
     }
-    if text.starts_with('{') || text.starts_with('[') {
+    let result = if text.starts_with('{') || text.starts_with('[') {
+        tracing::debug!("import: detected JSON input shape");
         import_json(text)
     } else {
+        tracing::debug!("import: detected share-link input shape");
         import_links(text)
+    };
+    match &result {
+        Ok(profile) => tracing::debug!(
+            outbounds = profile.outbounds.len(),
+            "import: produced profile"
+        ),
+        Err(err) => tracing::debug!(%err, "import: failed"),
     }
+    result
 }
 
 fn trim_bom(text: &str) -> &str {
@@ -45,7 +55,11 @@ fn import_json(text: &str) -> Result<Profile> {
             }
         },
         Value::Array(arr) => arr,
-        _ => return Err(WispError::Parse("expected a JSON object or array".to_string())),
+        _ => {
+            return Err(WispError::Parse(
+                "expected a JSON object or array".to_string(),
+            ))
+        }
     };
 
     let outbounds: Vec<Value> = raw_outbounds
@@ -80,7 +94,11 @@ fn import_json(text: &str) -> Result<Profile> {
 /// `"Bulgaria, Sophia § 0"` -> `"Bulgaria, Sophia"`.
 fn strip_counter_suffix(tag: &str) -> String {
     match tag.find('§') {
-        Some(idx) => tag[..idx].trim_end().trim_end_matches(',').trim_end().to_string(),
+        Some(idx) => tag[..idx]
+            .trim_end()
+            .trim_end_matches(',')
+            .trim_end()
+            .to_string(),
         None => tag.trim().to_string(),
     }
 }
@@ -219,7 +237,9 @@ fn parse_hysteria2_link(link: &str) -> Result<Value> {
 
     let password = url.username();
     if password.is_empty() {
-        return Err(WispError::Parse("hysteria2 link missing password".to_string()));
+        return Err(WispError::Parse(
+            "hysteria2 link missing password".to_string(),
+        ));
     }
 
     let host = required_host(&url)?;
@@ -238,7 +258,10 @@ fn parse_hysteria2_link(link: &str) -> Result<Value> {
         .get("obfs-password")
         .or_else(|| params.get("obfs_password"));
     if let Some(obfs_password) = obfs_password {
-        let obfs_type = params.get("obfs").map(String::as_str).unwrap_or("salamander");
+        let obfs_type = params
+            .get("obfs")
+            .map(String::as_str)
+            .unwrap_or("salamander");
         let mut obfs = Map::new();
         obfs.insert("type".to_string(), Value::String(obfs_type.to_string()));
         obfs.insert("password".to_string(), Value::String(obfs_password.clone()));
@@ -304,7 +327,10 @@ mod tests {
                 "Bulgaria, Sophia, hysteria-7w1t0rtt5a § 2".to_string(),
             ]
         );
-        assert_eq!(profile.active_tag, Some("Bulgaria, Sophia-7w1t0rtt5a § 0".to_string()));
+        assert_eq!(
+            profile.active_tag,
+            Some("Bulgaria, Sophia-7w1t0rtt5a § 0".to_string())
+        );
     }
 
     #[test]

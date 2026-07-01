@@ -1,5 +1,22 @@
 # 06 — Troubleshooting
 
+## Where to find the log file
+
+Wisp writes a detailed log to:
+
+```
+%LOCALAPPDATA%\Wisp\logs\wisp.log
+```
+
+(Paste that path into the File Explorer address bar.) A new file is started each
+day. It records startup, elevation, which server you connect to, the sing-box
+engine's own output, and any errors — but **never** your passwords or keys. It's
+the first thing to check when something misbehaves, and the best thing to attach
+to a bug report.
+
+Want more detail? Set the environment variable `WISP_LOG=debug` (or
+`RUST_LOG=trace`) before launching Wisp to raise the log verbosity.
+
 ## Can't connect / no internet after connecting
 
 | Cause | Fix |

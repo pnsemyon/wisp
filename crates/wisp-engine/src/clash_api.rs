@@ -61,8 +61,17 @@ impl ClashApi {
     /// finished starting up.
     pub async fn version(&self) -> Result<String> {
         let url = format!("{}/version", self.base);
+        tracing::debug!(method = "GET", path = "/version", "clash_api: request");
+        let result = self.request_version(&url).await;
+        if let Err(err) = &result {
+            tracing::error!(method = "GET", path = "/version", %err, "clash_api: request failed");
+        }
+        result
+    }
+
+    async fn request_version(&self, url: &str) -> Result<String> {
         let resp = self
-            .maybe_auth(self.http.get(&url))
+            .maybe_auth(self.http.get(url))
             .send()
             .await
             .context("sending /version request")?
@@ -75,8 +84,17 @@ impl ClashApi {
     /// `GET /connections`: current traffic totals and active connections.
     pub async fn connections(&self) -> Result<ConnectionsSnapshot> {
         let url = format!("{}/connections", self.base);
+        tracing::debug!(method = "GET", path = "/connections", "clash_api: request");
+        let result = self.request_connections(&url).await;
+        if let Err(err) = &result {
+            tracing::error!(method = "GET", path = "/connections", %err, "clash_api: request failed");
+        }
+        result
+    }
+
+    async fn request_connections(&self, url: &str) -> Result<ConnectionsSnapshot> {
         let resp = self
-            .maybe_auth(self.http.get(&url))
+            .maybe_auth(self.http.get(url))
             .send()
             .await
             .context("sending /connections request")?
@@ -91,15 +109,23 @@ impl ClashApi {
     /// active outbound of a `selector`-type outbound.
     pub async fn switch_selector(&self, selector: &str, name: &str) -> Result<()> {
         let url = format!("{}/proxies/{selector}", self.base);
+        let path = format!("/proxies/{selector}");
+        tracing::debug!(method = "PUT", %path, "clash_api: request");
         let body = serde_json::json!({ "name": name });
-        self.maybe_auth(self.http.put(&url))
+        let result = self
+            .maybe_auth(self.http.put(&url))
             .json(&body)
             .send()
             .await
-            .context("sending switch_selector request")?
-            .error_for_status()
-            .context("switch_selector returned an error status")?;
-        Ok(())
+            .context("sending switch_selector request")
+            .and_then(|resp| {
+                resp.error_for_status()
+                    .context("switch_selector returned an error status")
+            });
+        if let Err(err) = &result {
+            tracing::error!(method = "PUT", %path, %err, "clash_api: request failed");
+        }
+        result.map(|_| ())
     }
 }
 

@@ -36,8 +36,24 @@ impl Default for BuildSettings {
 
 /// Build a complete, ready-to-run sing-box config for `profile`, applying
 /// `split` tunneling rules and `settings`.
-pub fn build_config(profile: &Profile, split: &SplitConfig, settings: &BuildSettings) -> Result<Value> {
+pub fn build_config(
+    profile: &Profile,
+    split: &SplitConfig,
+    settings: &BuildSettings,
+) -> Result<Value> {
+    tracing::debug!(
+        mtu = settings.mtu,
+        clash_port = settings.clash_port,
+        split_mode = ?split.mode,
+        rule_count = split.rules.len(),
+        outbound_count = profile.outbounds.len(),
+        "build_config: building sing-box config"
+    );
     let tags = profile.tags();
+    tracing::debug!(
+        selector_tags = tags.len(),
+        "build_config: selector outbound tags"
+    );
     let default_tag = profile
         .active_tag
         .clone()
@@ -198,10 +214,17 @@ mod tests {
         assert!(selector_tags.contains(&"Bulgaria, Sophia, hysteria-7w1t0rtt5a § 2".to_string()));
         assert_eq!(selector["default"], "Bulgaria, Sophia-7w1t0rtt5a § 0");
 
-        assert!(outbounds.iter().any(|o| o["type"] == "direct" && o["tag"] == "direct"));
-        assert!(outbounds.iter().any(|o| o["type"] == "block" && o["tag"] == "block"));
+        assert!(outbounds
+            .iter()
+            .any(|o| o["type"] == "direct" && o["tag"] == "direct"));
+        assert!(outbounds
+            .iter()
+            .any(|o| o["type"] == "block" && o["tag"] == "block"));
 
-        assert_eq!(config["experimental"]["clash_api"]["external_controller"], "127.0.0.1:9090");
+        assert_eq!(
+            config["experimental"]["clash_api"]["external_controller"],
+            "127.0.0.1:9090"
+        );
     }
 
     #[test]
@@ -271,14 +294,20 @@ mod tests {
         let config = build_config(&profile, &split, &settings).expect("build should succeed");
         let rules = config["route"]["rules"].as_array().expect("rules array");
 
-        let process_rules: Vec<&Value> = rules.iter().filter(|r| r.get("process_name").is_some()).collect();
+        let process_rules: Vec<&Value> = rules
+            .iter()
+            .filter(|r| r.get("process_name").is_some())
+            .collect();
         assert_eq!(process_rules.len(), 1);
         assert_eq!(
             process_rules[0]["process_name"],
             json!(["chrome.exe", "firefox.exe"])
         );
 
-        let domain_rules: Vec<&Value> = rules.iter().filter(|r| r.get("domain_suffix").is_some()).collect();
+        let domain_rules: Vec<&Value> = rules
+            .iter()
+            .filter(|r| r.get("domain_suffix").is_some())
+            .collect();
         assert_eq!(domain_rules.len(), 1);
     }
 

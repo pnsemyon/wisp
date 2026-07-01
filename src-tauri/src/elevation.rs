@@ -24,7 +24,9 @@ pub fn ensure_elevated() -> bool {
 #[cfg(windows)]
 fn is_elevated() -> bool {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     unsafe {
@@ -65,6 +67,13 @@ fn relaunch_elevated() {
     // duration of this call (`w!` is a static literal, `exe_path` is an
     // owned `HSTRING` kept alive on the stack until `ShellExecuteW` returns).
     unsafe {
-        ShellExecuteW(None, w!("runas"), &exe_path, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+        ShellExecuteW(
+            None,
+            w!("runas"),
+            &exe_path,
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
     }
 }

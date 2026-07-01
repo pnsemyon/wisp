@@ -51,10 +51,26 @@ fn search_dirs(candidate_dirs: &[PathBuf]) -> anyhow::Result<Resources> {
     }
 
     match (singbox, wintun_dir) {
-        (Some(singbox), Some(wintun_dir)) => Ok(Resources { singbox, wintun_dir }),
-        _ => anyhow::bail!(
-            "could not locate {singbox_name} and/or {WINTUN_FILENAME} in any of {candidate_dirs:?}"
-        ),
+        (Some(singbox), Some(wintun_dir)) => {
+            tracing::info!(
+                singbox = %singbox.display(),
+                wintun_dir = %wintun_dir.display(),
+                "locate_resources: resolved sing-box binary and wintun dir"
+            );
+            Ok(Resources {
+                singbox,
+                wintun_dir,
+            })
+        }
+        _ => {
+            tracing::warn!(
+                searched = ?candidate_dirs,
+                "locate_resources: could not find {singbox_name} and/or {WINTUN_FILENAME}"
+            );
+            anyhow::bail!(
+                "could not locate {singbox_name} and/or {WINTUN_FILENAME} in any of {candidate_dirs:?}"
+            )
+        }
     }
 }
 
@@ -80,6 +96,7 @@ pub fn locate_resources() -> anyhow::Result<Resources> {
     dirs.push(PathBuf::from("resources"));
     dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources"));
 
+    tracing::debug!(candidate_dirs = ?dirs, "locate_resources: searching candidate dirs");
     search_dirs(&dirs)
 }
 

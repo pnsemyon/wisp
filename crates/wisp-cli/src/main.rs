@@ -12,7 +12,10 @@ use wisp_core::{build_config, import, BuildSettings, Profile, SplitConfig, Split
 use wisp_engine::{locate_resources, Engine, SingBoxProcess};
 
 #[derive(Parser)]
-#[command(name = "wisp", about = "Headless test harness for wisp-core + wisp-engine")]
+#[command(
+    name = "wisp",
+    about = "Headless test harness for wisp-core + wisp-engine"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -96,7 +99,10 @@ fn parse_rule(spec: &str) -> Result<SplitRule> {
 }
 
 fn split_config(mode: SplitModeArg, rules: &[String]) -> Result<SplitConfig> {
-    let rules = rules.iter().map(|r| parse_rule(r)).collect::<Result<Vec<_>>>()?;
+    let rules = rules
+        .iter()
+        .map(|r| parse_rule(r))
+        .collect::<Result<Vec<_>>>()?;
     Ok(SplitConfig {
         mode: mode.into(),
         rules,
@@ -104,7 +110,8 @@ fn split_config(mode: SplitModeArg, rules: &[String]) -> Result<SplitConfig> {
 }
 
 fn read_profile(file: &Path) -> Result<Profile> {
-    let text = std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+    let text =
+        std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
     import(&text).with_context(|| format!("parsing {}", file.display()))
 }
 
@@ -135,7 +142,13 @@ fn cmd_gen(file: &Path, mtu: u32, mode: SplitModeArg, rules: &[String]) -> Resul
     Ok(())
 }
 
-async fn cmd_run(file: &Path, mtu: u32, mode: SplitModeArg, rules: &[String], binary: Option<PathBuf>) -> Result<()> {
+async fn cmd_run(
+    file: &Path,
+    mtu: u32,
+    mode: SplitModeArg,
+    rules: &[String],
+    binary: Option<PathBuf>,
+) -> Result<()> {
     let profile = read_profile(file)?;
     let split = split_config(mode, rules)?;
     let settings = BuildSettings {
@@ -146,7 +159,11 @@ async fn cmd_run(file: &Path, mtu: u32, mode: SplitModeArg, rules: &[String], bi
 
     let binary = match binary {
         Some(path) => path,
-        None => locate_resources().context("locating sing-box binary")?.singbox,
+        None => {
+            locate_resources()
+                .context("locating sing-box binary")?
+                .singbox
+        }
     };
 
     let work_dir = std::env::temp_dir().join("wisp-cli-run");
@@ -154,7 +171,12 @@ async fn cmd_run(file: &Path, mtu: u32, mode: SplitModeArg, rules: &[String], bi
         .await
         .with_context(|| format!("creating work dir {}", work_dir.display()))?;
 
-    let engine = SingBoxProcess::new(binary, work_dir, settings.clash_port, settings.clash_secret.clone());
+    let engine = SingBoxProcess::new(
+        binary,
+        work_dir,
+        settings.clash_port,
+        settings.clash_secret.clone(),
+    );
     engine.start(config).await.context("starting sing-box")?;
     println!("sing-box started; printing stats every 2s, press Ctrl-C to stop");
 
@@ -178,14 +200,28 @@ async fn cmd_run(file: &Path, mtu: u32, mode: SplitModeArg, rules: &[String], bi
     Ok(())
 }
 
+/// Default `tracing` filter used when `RUST_LOG` isn't set: info-level
+/// everywhere, debug for our own crates.
+const DEFAULT_LOG_FILTER: &str = "info,wisp_core=debug,wisp_engine=debug,wisp=debug";
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(DEFAULT_LOG_FILTER)),
+        )
+        .init();
     let cli = Cli::parse();
 
     match cli.command {
         Command::Parse { file } => cmd_parse(&file),
-        Command::Gen { file, mtu, mode, rules } => cmd_gen(&file, mtu, mode, &rules),
+        Command::Gen {
+            file,
+            mtu,
+            mode,
+            rules,
+        } => cmd_gen(&file, mtu, mode, &rules),
         Command::Run {
             file,
             mtu,

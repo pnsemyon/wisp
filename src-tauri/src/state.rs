@@ -78,7 +78,8 @@ impl AppState {
             .map_err(|e| format!("failed to create config dir {}: {e}", config_dir.display()))?;
 
         let settings: Settings = load_json(&config_dir.join("settings.json")).unwrap_or_default();
-        let profiles_file: ProfilesFile = load_json(&config_dir.join("profiles.json")).unwrap_or_default();
+        let profiles_file: ProfilesFile =
+            load_json(&config_dir.join("profiles.json")).unwrap_or_default();
         let split: SplitConfig = load_json(&config_dir.join("split.json")).unwrap_or_default();
 
         let engine = Arc::new(build_engine(&config_dir, &settings));
@@ -107,7 +108,11 @@ impl AppState {
         self.config_dir.join("split.json")
     }
 
-    pub fn save_profiles(&self, profiles: &[Profile], active_profile: &Option<String>) -> Result<(), String> {
+    pub fn save_profiles(
+        &self,
+        profiles: &[Profile],
+        active_profile: &Option<String>,
+    ) -> Result<(), String> {
         let file = ProfilesFile {
             profiles: profiles.to_vec(),
             active_profile: active_profile.clone(),
@@ -130,11 +135,32 @@ impl AppState {
 /// commands still work) on a machine where `sing-box`/`wintun` aren't staged
 /// yet (e.g. this Linux dev/check environment).
 pub fn build_engine(config_dir: &Path, settings: &Settings) -> SingBoxProcess {
-    let binary = wisp_engine::locate_resources()
-        .map(|r| r.singbox)
-        .unwrap_or_else(|_| config_dir.join("sing-box.exe"));
+    let binary = match wisp_engine::locate_resources() {
+        Ok(resources) => {
+            tracing::info!(binary = %resources.singbox.display(), "build_engine: using located sing-box binary");
+            resources.singbox
+        }
+        Err(err) => {
+            let fallback = config_dir.join("sing-box.exe");
+            tracing::warn!(
+                %err,
+                fallback = %fallback.display(),
+                "build_engine: locate_resources failed, falling back to config dir"
+            );
+            fallback
+        }
+    };
 
-    SingBoxProcess::new(binary, config_dir.to_path_buf(), settings.clash_port, settings.clash_secret.clone())
+    tracing::info!(
+        clash_port = settings.clash_port,
+        "build_engine: constructing sing-box engine handle"
+    );
+    SingBoxProcess::new(
+        binary,
+        config_dir.to_path_buf(),
+        settings.clash_port,
+        settings.clash_secret.clone(),
+    )
 }
 
 fn load_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {

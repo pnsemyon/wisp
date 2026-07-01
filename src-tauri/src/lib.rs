@@ -30,6 +30,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            // Tell wisp-engine where Tauri unpacked the bundled sing-box.exe +
+            // wintun.dll (see `bundle.resources` in tauri.conf.json), so
+            // `locate_resources()` finds them in the installed app.
+            if let Ok(res_dir) = app.path().resource_dir() {
+                std::env::set_var("WISP_RESOURCE_DIR", res_dir);
+            }
+
             let config_dir = app
                 .path()
                 .app_config_dir()

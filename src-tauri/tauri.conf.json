@@ -38,6 +38,10 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../resources/sing-box.exe": "resources/sing-box.exe",
+      "../resources/wintun.dll": "resources/wintun.dll"
+    }
   }
 }

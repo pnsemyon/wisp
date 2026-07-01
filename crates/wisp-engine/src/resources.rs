@@ -58,14 +58,22 @@ fn search_dirs(candidate_dirs: &[PathBuf]) -> anyhow::Result<Resources> {
     }
 }
 
-/// Look for `sing-box(.exe)` and `wintun.dll` next to the current exe, in
-/// `./resources`, and in the cargo manifest's `../../resources` (dev
-/// builds), returning the first hit for each.
+/// Look for `sing-box(.exe)` and `wintun.dll` in, in order: the directory
+/// named by `WISP_RESOURCE_DIR` (and its `resources/` subdir) — set by the
+/// Tauri app to where it unpacked the bundled binaries — then next to the
+/// current exe, in `./resources`, and in the cargo manifest's
+/// `../../resources` (dev builds). Returns the first hit for each.
 pub fn locate_resources() -> anyhow::Result<Resources> {
     let mut dirs = Vec::new();
 
+    if let Some(res_dir) = std::env::var_os("WISP_RESOURCE_DIR") {
+        let res_dir = PathBuf::from(res_dir);
+        dirs.push(res_dir.join("resources"));
+        dirs.push(res_dir);
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
+            dirs.push(parent.join("resources"));
             dirs.push(parent.to_path_buf());
         }
     }

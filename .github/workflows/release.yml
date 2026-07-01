@@ -1,0 +1,63 @@
+name: Release
+
+# Builds the Windows installers (NSIS .exe + MSI) and publishes them to a
+# GitHub Release. Triggers on pushing a version tag (e.g. `v0.1.0`), or
+# manually via the Actions tab.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to release (e.g. v0.1.0). Must already exist or will be created on the current commit."
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish Windows installers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            src-tauri -> target
+
+      # sing-box.exe + wintun.dll are bundled into the installer (see
+      # bundle.resources in tauri.conf.json), so they must be present BEFORE
+      # the Tauri build runs.
+      - name: Fetch engine resources
+        run: ./scripts/fetch-resources.ps1
+        shell: pwsh
+
+      - name: Build app and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: src-tauri
+          tagName: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}
+          releaseName: "Wisp ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}"
+          releaseBody: |
+            Windows installers for Wisp.
+
+            - **`Wisp_x.y.z_x64-setup.exe`** — NSIS installer (recommended).
+            - **`Wisp_x.y.z_x64_en-US.msi`** — MSI installer.
+
+            The bundled sing-box engine + Wintun driver are included. Installation
+            requires administrator rights (Wisp creates a TUN adapter).
+
+            > These installers are **not code-signed** yet, so Windows SmartScreen
+            > may warn on first run — choose "More info → Run anyway".
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: false

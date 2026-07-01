@@ -62,13 +62,15 @@ cargo tauri dev
 - [x] Tauri backend + tray + persistence
 - [x] UI: connect, stats, split-tunnel manager
 - [ ] Build & smoke-test the app on Windows (Wintun/TUN + elevation)
-- [ ] Windows installer & code-signing
+- [x] Release workflow: bundle engine + build NSIS/MSI installers ([docs](docs/RELEASING.md))
+- [ ] Code-signing (installers are currently unsigned)
 - [ ] Android target (Tauri v2 mobile + gomobile engine)
 
 ## Documentation
 
 - [User guide](docs/user-guide/README.md) — installing Wisp, adding a server, connecting, split tunneling, settings, troubleshooting, and the CLI.
 - [Developer docs](docs/dev-vault/Home.md) — architecture, crate layout, and internals.
+- [Releasing](docs/RELEASING.md) — how the Windows installers are built and published.
 
 ## License
 

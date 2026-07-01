@@ -57,12 +57,18 @@ cargo tauri dev
 ## Roadmap
 
 - [x] Repo scaffold & architecture
-- [ ] `wisp-core`: parse the 3 protocol links + generate sing-box config
-- [ ] `wisp-engine`: spawn & control sing-box
-- [ ] Tauri backend + tray + persistence
-- [ ] UI: connect, stats, split-tunnel manager
+- [x] `wisp-core`: parse the 3 protocol links + generate sing-box config
+- [x] `wisp-engine`: spawn & control sing-box
+- [x] Tauri backend + tray + persistence
+- [x] UI: connect, stats, split-tunnel manager
+- [ ] Build & smoke-test the app on Windows (Wintun/TUN + elevation)
 - [ ] Windows installer & code-signing
 - [ ] Android target (Tauri v2 mobile + gomobile engine)
+
+## Documentation
+
+- [User guide](docs/user-guide/README.md) — installing Wisp, adding a server, connecting, split tunneling, settings, troubleshooting, and the CLI.
+- [Developer docs](docs/dev-vault/Home.md) — architecture, crate layout, and internals.
 
 ## License
 

@@ -65,6 +65,10 @@
         <section class="card">
           <div class="card-header">
             <h2>Split tunneling</h2>
+            <div class="card-actions">
+              <button class="btn btn-ghost" id="btn-export-split">Export</button>
+              <button class="btn btn-ghost" id="btn-import-split">Import</button>
+            </div>
           </div>
           <div class="split-modes" id="split-modes">
             <label class="radio-card">
@@ -75,32 +79,40 @@
               </div>
             </label>
             <label class="radio-card">
-              <input type="radio" name="split-mode" value="exclude" />
+              <input type="radio" name="split-mode" value="blacklist" />
               <div>
-                <div class="radio-title">Exclude</div>
-                <div class="radio-desc">Listed apps/domains go direct, everything else is proxied.</div>
+                <div class="radio-title">Blacklist</div>
+                <div class="radio-desc">Listed apps/domains/IPs bypass the VPN, everything else is proxied.</div>
               </div>
             </label>
             <label class="radio-card">
-              <input type="radio" name="split-mode" value="include" />
+              <input type="radio" name="split-mode" value="whitelist" />
               <div>
-                <div class="radio-title">Include</div>
-                <div class="radio-desc">Only listed apps/domains are proxied, everything else goes direct.</div>
+                <div class="radio-title">Whitelist</div>
+                <div class="radio-desc">Only listed apps/domains/IPs go through the VPN, everything else is direct.</div>
               </div>
             </label>
           </div>
+
+          <button class="btn btn-preset" id="btn-valve-preset">Exclude Valve / Steam games (Dota 2, CS, Steam)</button>
+          <div class="preset-hint">Routes all Valve/Steam traffic (incl. game servers) directly so games keep real, low latency.</div>
 
           <div class="split-rules" id="split-rules">
             <div class="empty-hint" id="split-rules-empty">No rules yet.</div>
           </div>
 
           <div class="split-add-row">
-            <button class="btn btn-secondary" id="btn-add-app">+ Add app</button>
-            <div class="add-domain">
-              <input type="text" id="input-domain" class="input" placeholder="example.com" />
-              <button class="btn btn-secondary" id="btn-add-domain">+ Add domain</button>
-            </div>
+            <select id="select-rule-kind" class="select rule-kind-select">
+              <option value="process">App (process name)</option>
+              <option value="process_path_regex">App path (regex)</option>
+              <option value="domain_suffix">Domain suffix</option>
+              <option value="domain_regex">Domain (regex)</option>
+              <option value="ip_cidr">IP range (CIDR)</option>
+            </select>
+            <input type="text" id="input-rule-value" class="input" placeholder="chrome.exe" />
+            <button class="btn btn-secondary" id="btn-add-rule">+ Add rule</button>
           </div>
+          <button class="btn btn-secondary" id="btn-add-app">Pick a running app…</button>
         </section>
 
         <!-- Settings -->
@@ -115,6 +127,19 @@
           <div class="settings-row">
             <label class="label" for="input-autostart">Launch at login</label>
             <input type="checkbox" id="input-autostart" />
+          </div>
+          <div class="settings-row">
+            <label class="label" for="select-log-level">Log level</label>
+            <select id="select-log-level" class="select input-small">
+              <option value="error">error</option>
+              <option value="warn">warn</option>
+              <option value="info" selected>info</option>
+              <option value="debug">debug</option>
+              <option value="trace">trace</option>
+            </select>
+          </div>
+          <div class="settings-hint">
+            <code>debug</code> helps diagnose routing/leaks and writes to the log file.
           </div>
           <button class="btn btn-primary" id="btn-save-settings">Save settings</button>
         </section>

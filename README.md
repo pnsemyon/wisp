@@ -67,10 +67,12 @@ cargo tauri dev
 - [x] Release workflow: bundle engine + build NSIS/MSI installers ([docs](docs/RELEASING.md))
 - [ ] **Fix in-place upgrade** so the app binary is replaced even when running in the tray
       ([bug note](docs/dev-vault/Bug%20-%20Stale%20app%20binary%20on%20in-place%20upgrade.md))
-- [ ] **Rename split modes** Exclude/Include → **Blacklist/Whitelist**
-- [ ] **Regex** support for app/domain split rules (`domain_regex` / `process_path_regex`)
-- [ ] Apply split-rule changes to the live tunnel without a manual reconnect
-- [ ] Gaming split-tunnel recipe (exclude `dota2.exe`/Steam so games keep real, low latency)
+- [x] **Rename split modes** Exclude/Include → **Blacklist/Whitelist**
+- [x] **Regex** support for app/domain split rules (`domain_regex` / `process_path_regex`)
+- [x] Apply split-rule changes to the live tunnel (settings/split edits force a reconnect)
+- [x] Gaming split-tunnel recipe: one-click **Exclude Valve / Steam** preset (Dota 2, CS, Steam) that routes Valve's announced networks + Steam domains direct
+- [x] Export / import split-tunnel config as JSON
+- [x] Configurable log level (error…trace) from the UI
 - [ ] Code-signing (installers are currently unsigned)
 - [ ] Android target (Tauri v2 mobile + gomobile engine)
 

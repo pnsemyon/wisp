@@ -67,16 +67,18 @@ enum Command {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum SplitModeArg {
     Off,
-    Exclude,
-    Include,
+    #[value(alias = "exclude")]
+    Blacklist,
+    #[value(alias = "include")]
+    Whitelist,
 }
 
 impl From<SplitModeArg> for SplitMode {
     fn from(mode: SplitModeArg) -> Self {
         match mode {
             SplitModeArg::Off => SplitMode::Off,
-            SplitModeArg::Exclude => SplitMode::Exclude,
-            SplitModeArg::Include => SplitMode::Include,
+            SplitModeArg::Blacklist => SplitMode::Blacklist,
+            SplitModeArg::Whitelist => SplitMode::Whitelist,
         }
     }
 }

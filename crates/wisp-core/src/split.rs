@@ -10,10 +10,17 @@ use serde::{Deserialize, Serialize};
 pub enum SplitMode {
     /// Everything goes through the proxy.
     Off,
-    /// Listed rules go direct, everything else is proxied.
-    Exclude,
+    /// Listed rules go direct, everything else is proxied. Persisted
+    /// `split.json` files from before the `Exclude` -> `Blacklist` rename
+    /// still use `"mode":"exclude"`, so that's kept as a deserialize alias.
+    #[serde(alias = "exclude")]
+    Blacklist,
     /// Only listed rules are proxied, everything else goes direct.
-    Include,
+    /// Persisted `split.json` files from before the `Include` ->
+    /// `Whitelist` rename still use `"mode":"include"`, so that's kept as a
+    /// deserialize alias.
+    #[serde(alias = "include")]
+    Whitelist,
 }
 
 /// A single split-tunnel selector.
@@ -23,6 +30,10 @@ pub enum SplitRule {
     Process(String),
     ProcessPath(String),
     DomainSuffix(String),
+    /// Regular expression matched against the connection domain.
+    DomainRegex(String),
+    /// Regular expression matched against the process path.
+    ProcessPathRegex(String),
     IpCidr(String),
 }
 
@@ -34,6 +45,8 @@ impl SplitRule {
             SplitRule::Process(v) => ("process_name", v.as_str()),
             SplitRule::ProcessPath(v) => ("process_path", v.as_str()),
             SplitRule::DomainSuffix(v) => ("domain_suffix", v.as_str()),
+            SplitRule::DomainRegex(v) => ("domain_regex", v.as_str()),
+            SplitRule::ProcessPathRegex(v) => ("process_path_regex", v.as_str()),
             SplitRule::IpCidr(v) => ("ip_cidr", v.as_str()),
         }
     }
@@ -81,6 +94,14 @@ mod tests {
             ("domain_suffix", "x.com")
         );
         assert_eq!(
+            SplitRule::DomainRegex("^ads\\.".into()).field(),
+            ("domain_regex", "^ads\\.")
+        );
+        assert_eq!(
+            SplitRule::ProcessPathRegex("C:\\\\Games\\\\.*".into()).field(),
+            ("process_path_regex", "C:\\\\Games\\\\.*")
+        );
+        assert_eq!(
             SplitRule::IpCidr("1.2.3.0/24".into()).field(),
             ("ip_cidr", "1.2.3.0/24")
         );
@@ -88,9 +109,13 @@ mod tests {
 
     #[test]
     fn serde_roundtrip() {
-        let mode = SplitMode::Exclude;
+        let mode = SplitMode::Blacklist;
         let json = serde_json::to_string(&mode).expect("serialize");
-        assert_eq!(json, "\"exclude\"");
+        assert_eq!(json, "\"blacklist\"");
+
+        let mode = SplitMode::Whitelist;
+        let json = serde_json::to_string(&mode).expect("serialize");
+        assert_eq!(json, "\"whitelist\"");
 
         let rule = SplitRule::Process("chrome.exe".into());
         let json = serde_json::to_value(&rule).expect("serialize");
@@ -98,5 +123,28 @@ mod tests {
             json,
             serde_json::json!({"kind": "process", "value": "chrome.exe"})
         );
+    }
+
+    #[test]
+    fn old_persisted_exclude_and_include_mode_names_still_deserialize() {
+        // Existing `split.json` files on disk from before the rename use
+        // the old mode names; they must keep loading as the renamed
+        // variants rather than failing to deserialize.
+        let cfg: SplitConfig =
+            serde_json::from_str(r#"{"mode":"exclude","rules":[]}"#).expect("deserialize");
+        assert_eq!(cfg.mode, SplitMode::Blacklist);
+
+        let cfg: SplitConfig =
+            serde_json::from_str(r#"{"mode":"include","rules":[]}"#).expect("deserialize");
+        assert_eq!(cfg.mode, SplitMode::Whitelist);
+
+        // New names also deserialize.
+        let cfg: SplitConfig =
+            serde_json::from_str(r#"{"mode":"blacklist","rules":[]}"#).expect("deserialize");
+        assert_eq!(cfg.mode, SplitMode::Blacklist);
+
+        let cfg: SplitConfig =
+            serde_json::from_str(r#"{"mode":"whitelist","rules":[]}"#).expect("deserialize");
+        assert_eq!(cfg.mode, SplitMode::Whitelist);
     }
 }

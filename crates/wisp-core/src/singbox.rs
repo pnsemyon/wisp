@@ -30,6 +30,9 @@ pub struct BuildSettings {
     pub clash_port: u16,
     /// Optional local SOCKS inbound port, in addition to the TUN inbound.
     pub socks_port: Option<u16>,
+    /// sing-box `log.level`. Default `"info"`; the app can raise this to
+    /// `"debug"`/`"trace"` for diagnosing routing issues.
+    pub log_level: String,
 }
 
 impl Default for BuildSettings {
@@ -39,6 +42,7 @@ impl Default for BuildSettings {
             clash_secret: String::new(),
             clash_port: 9090,
             socks_port: None,
+            log_level: "info".to_string(),
         }
     }
 }
@@ -257,7 +261,7 @@ pub fn build_config(
     let route = build_route(split);
 
     Ok(json!({
-        "log": { "level": "info", "timestamp": true },
+        "log": { "level": settings.log_level, "timestamp": true },
         "dns": {
             "servers": [
                 { "type": "tls", "tag": "dns-remote", "server": "8.8.8.8", "detour": "proxy" },
@@ -278,21 +282,31 @@ pub fn build_config(
 }
 
 fn build_route(split: &SplitConfig) -> Value {
-    let mut rules: Vec<Value> = vec![
-        json!({ "action": "sniff" }),
-        json!({ "protocol": "dns", "action": "hijack-dns" }),
-        json!({ "ip_is_private": true, "outbound": "direct" }),
-    ];
+    let hijack_dns = json!({ "protocol": "dns", "action": "hijack-dns" });
+    let private_direct = json!({ "ip_is_private": true, "outbound": "direct" });
 
-    let final_outbound = match split.mode {
-        SplitMode::Off => "proxy",
-        SplitMode::Exclude => {
+    let (rules, final_outbound): (Vec<Value>, &'static str) = match split.mode {
+        SplitMode::Off => (
+            vec![json!({ "action": "sniff" }), hijack_dns, private_direct],
+            "proxy",
+        ),
+        SplitMode::Blacklist => {
+            // Excluded apps' rules must come BEFORE hijack-dns: otherwise
+            // their DNS lookups are still hijacked/proxied even though
+            // their traffic goes direct, which can make e.g. a game
+            // discover a wrong-region relay while its traffic itself
+            // bypasses the proxy. Putting the exclusion rules first makes
+            // excluded apps fully direct, DNS included.
+            let mut rules = vec![json!({ "action": "sniff" })];
             rules.extend(rule_group(&split.rules, "direct"));
-            "proxy"
+            rules.push(hijack_dns);
+            rules.push(private_direct);
+            (rules, "proxy")
         }
-        SplitMode::Include => {
+        SplitMode::Whitelist => {
+            let mut rules = vec![json!({ "action": "sniff" }), hijack_dns, private_direct];
             rules.extend(rule_group(&split.rules, "proxy"));
-            "direct"
+            (rules, "direct")
         }
     };
 
@@ -565,10 +579,10 @@ mod tests {
     }
 
     #[test]
-    fn split_exclude_routes_chrome_direct_and_final_proxy() {
+    fn split_blacklist_routes_chrome_direct_and_final_proxy() {
         let profile = fixture_profile();
         let split = SplitConfig {
-            mode: SplitMode::Exclude,
+            mode: SplitMode::Blacklist,
             rules: vec![SplitRule::Process("chrome.exe".to_string())],
         };
         let settings = BuildSettings::default();
@@ -585,10 +599,10 @@ mod tests {
     }
 
     #[test]
-    fn split_include_routes_chrome_proxy_and_final_direct() {
+    fn split_whitelist_routes_chrome_proxy_and_final_direct() {
         let profile = fixture_profile();
         let split = SplitConfig {
-            mode: SplitMode::Include,
+            mode: SplitMode::Whitelist,
             rules: vec![SplitRule::Process("chrome.exe".to_string())],
         };
         let settings = BuildSettings::default();
@@ -608,7 +622,7 @@ mod tests {
     fn multiple_rules_of_same_field_are_grouped() {
         let profile = fixture_profile();
         let split = SplitConfig {
-            mode: SplitMode::Exclude,
+            mode: SplitMode::Blacklist,
             rules: vec![
                 SplitRule::Process("chrome.exe".to_string()),
                 SplitRule::Process("firefox.exe".to_string()),
@@ -634,6 +648,129 @@ mod tests {
             .filter(|r| r.get("domain_suffix").is_some())
             .collect();
         assert_eq!(domain_rules.len(), 1);
+    }
+
+    #[test]
+    fn blacklist_rules_are_grouped_before_hijack_dns_so_excluded_dns_is_direct() {
+        // This is the fix for the real bug: an excluded (blacklisted) app's
+        // DNS lookups must never be hijacked/proxied, only its blacklist
+        // rule(s) may run before `hijack-dns`. If the ordering regresses,
+        // an excluded game's DNS resolves via the proxy again even though
+        // its traffic is direct, which can make it connect to a
+        // wrong-region relay/matchmaking server.
+        let profile = fixture_profile();
+        let split = SplitConfig {
+            mode: SplitMode::Blacklist,
+            rules: vec![SplitRule::Process("dota2.exe".to_string())],
+        };
+        let settings = BuildSettings::default();
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+        let rules = config["route"]["rules"].as_array().expect("rules array");
+
+        assert_eq!(rules[0]["action"], "sniff");
+
+        let process_idx = rules
+            .iter()
+            .position(|r| r.get("process_name").is_some())
+            .expect("process_name rule present");
+        let hijack_idx = rules
+            .iter()
+            .position(|r| r["action"] == "hijack-dns")
+            .expect("hijack-dns rule present");
+        let private_idx = rules
+            .iter()
+            .position(|r| r.get("ip_is_private").is_some())
+            .expect("ip_is_private rule present");
+
+        assert!(
+            process_idx < hijack_idx,
+            "blacklisted process rule (index {process_idx}) must come before \
+             hijack-dns (index {hijack_idx}) so its DNS goes direct too"
+        );
+        assert!(hijack_idx < private_idx);
+        assert_eq!(rules[process_idx]["outbound"], "direct");
+        assert_eq!(config["route"]["final"], "proxy");
+    }
+
+    #[test]
+    fn whitelist_rules_come_after_hijack_dns_and_private_direct() {
+        let profile = fixture_profile();
+        let split = SplitConfig {
+            mode: SplitMode::Whitelist,
+            rules: vec![SplitRule::Process("chrome.exe".to_string())],
+        };
+        let settings = BuildSettings::default();
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+        let rules = config["route"]["rules"].as_array().expect("rules array");
+
+        let hijack_idx = rules
+            .iter()
+            .position(|r| r["action"] == "hijack-dns")
+            .expect("hijack-dns rule present");
+        let private_idx = rules
+            .iter()
+            .position(|r| r.get("ip_is_private").is_some())
+            .expect("ip_is_private rule present");
+        let process_idx = rules
+            .iter()
+            .position(|r| r.get("process_name").is_some())
+            .expect("process_name rule present");
+
+        assert_eq!(rules[0]["action"], "sniff");
+        assert!(hijack_idx < private_idx);
+        assert!(private_idx < process_idx);
+        assert_eq!(config["route"]["final"], "direct");
+    }
+
+    #[test]
+    fn domain_regex_and_process_path_regex_rules_map_to_singbox_fields() {
+        let profile = fixture_profile();
+        let split = SplitConfig {
+            mode: SplitMode::Blacklist,
+            rules: vec![
+                SplitRule::DomainRegex(r"^ads\.".to_string()),
+                SplitRule::ProcessPathRegex(r"C:\\Games\\.*".to_string()),
+            ],
+        };
+        let settings = BuildSettings::default();
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+        let rules = config["route"]["rules"].as_array().expect("rules array");
+
+        let domain_regex_rule = rules
+            .iter()
+            .find(|r| r.get("domain_regex").is_some())
+            .expect("domain_regex rule present");
+        assert_eq!(domain_regex_rule["domain_regex"], json!([r"^ads\."]));
+        assert_eq!(domain_regex_rule["outbound"], "direct");
+
+        let process_path_regex_rule = rules
+            .iter()
+            .find(|r| r.get("process_path_regex").is_some())
+            .expect("process_path_regex rule present");
+        assert_eq!(
+            process_path_regex_rule["process_path_regex"],
+            json!([r"C:\\Games\\.*"])
+        );
+        assert_eq!(process_path_regex_rule["outbound"], "direct");
+    }
+
+    #[test]
+    fn log_level_flows_into_log_block() {
+        let profile = fixture_profile();
+        let split = SplitConfig::default();
+        let settings = BuildSettings {
+            log_level: "trace".to_string(),
+            ..BuildSettings::default()
+        };
+        let config = build_config(&profile, &split, &settings).expect("build should succeed");
+
+        assert_eq!(config["log"]["level"], "trace");
+        assert_eq!(config["log"]["timestamp"], true);
+    }
+
+    #[test]
+    fn default_build_settings_log_level_is_info() {
+        assert_eq!(BuildSettings::default().log_level, "info");
     }
 
     #[test]
@@ -684,17 +821,29 @@ mod tests {
         let modes = [
             ("off", SplitConfig::default()),
             (
-                "exclude",
+                "blacklist",
                 SplitConfig {
-                    mode: SplitMode::Exclude,
-                    rules: vec![SplitRule::Process("chrome.exe".to_string())],
+                    mode: SplitMode::Blacklist,
+                    rules: vec![
+                        SplitRule::Process("dota2.exe".to_string()),
+                        SplitRule::Process("steam.exe".to_string()),
+                        SplitRule::IpCidr("10.0.0.0/8".to_string()),
+                        SplitRule::DomainSuffix("steampowered.com".to_string()),
+                        SplitRule::DomainRegex(r"^ads\..*\.example\.com$".to_string()),
+                        SplitRule::ProcessPathRegex(
+                            r"C:\\Program Files \(x86\)\\Steam\\.*".to_string(),
+                        ),
+                    ],
                 },
             ),
             (
-                "include",
+                "whitelist",
                 SplitConfig {
-                    mode: SplitMode::Include,
-                    rules: vec![SplitRule::Process("chrome.exe".to_string())],
+                    mode: SplitMode::Whitelist,
+                    rules: vec![
+                        SplitRule::Process("chrome.exe".to_string()),
+                        SplitRule::DomainSuffix("example.com".to_string()),
+                    ],
                 },
             ),
         ];

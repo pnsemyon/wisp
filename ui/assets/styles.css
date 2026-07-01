@@ -1,16 +1,19 @@
 :root {
   color-scheme: dark;
-  --bg: #14151c;
-  --bg-elevated: #1b1d27;
-  --card: #20222e;
-  --card-border: #2b2e3d;
-  --text: #eceef4;
-  --text-dim: #9298ad;
-  --accent: #6d6ff2;
-  --accent-strong: #8688ff;
-  --danger: #f2596d;
-  --ok: #3ecf8e;
-  --warn: #f2b84b;
+  /* 5-color palette: https://coolors.co/000000-54457f-c4e7d4-6e633d-bc2c1a */
+  --bg: #000000;
+  --bg-elevated: #14111f;
+  --card: #17131f;
+  --card-border: #2c2540;
+  --text: #dff2e8;
+  --text-dim: #b7ab7c;
+  --accent: #54457f;
+  --accent-strong: #6d5aa3;
+  --success: #c4e7d4;
+  --muted: #6e633d;
+  --danger: #bc2c1a;
+  --ok: #c4e7d4;
+  --warn: #54457f;
   --radius: 14px;
   --radius-sm: 10px;
   font-family: -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
@@ -64,7 +67,7 @@ body {
   height: 26px;
   border-radius: 8px;
   background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-  color: white;
+  color: var(--success);
   font-weight: 700;
   font-size: 14px;
 }
@@ -198,7 +201,7 @@ body {
 
 .btn-primary {
   background: linear-gradient(135deg, var(--accent), var(--accent-strong));
-  color: white;
+  color: var(--success);
 }
 .btn-primary:hover {
   filter: brightness(1.08);
@@ -247,12 +250,12 @@ body {
   border-radius: 50%;
   border: none;
   background: radial-gradient(circle at 30% 30%, var(--accent-strong), var(--accent));
-  color: white;
+  color: var(--success);
   font-size: 16px;
   font-weight: 700;
   cursor: pointer;
   align-self: center;
-  box-shadow: 0 8px 24px rgba(109, 111, 242, 0.35);
+  box-shadow: 0 8px 24px rgba(84, 69, 127, 0.35);
   transition: filter 0.15s ease, transform 0.05s ease, box-shadow 0.15s ease;
 }
 
@@ -265,8 +268,8 @@ body {
 }
 
 .connect-toggle[data-connected="true"] {
-  background: radial-gradient(circle at 30% 30%, #ff7b8f, var(--danger));
-  box-shadow: 0 8px 24px rgba(242, 89, 109, 0.35);
+  background: radial-gradient(circle at 30% 30%, #de4a34, var(--danger));
+  box-shadow: 0 8px 24px rgba(188, 44, 26, 0.35);
 }
 
 .connect-toggle[data-pending="true"] {
@@ -324,7 +327,7 @@ body {
 
 .radio-card:has(input:checked) {
   border-color: var(--accent);
-  background: rgba(109, 111, 242, 0.12);
+  background: rgba(84, 69, 127, 0.28);
 }
 
 .radio-card input {
@@ -388,15 +391,42 @@ body {
   align-items: center;
 }
 
-.add-domain {
-  display: flex;
-  gap: 6px;
-  flex: 1;
-  min-width: 200px;
+.split-add-row .rule-kind-select {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 150px;
 }
 
-.add-domain .input {
+.split-add-row .input {
   flex: 1;
+  min-width: 140px;
+}
+
+/* Preset button */
+.btn-preset {
+  background: var(--accent);
+  color: var(--success);
+  border: 1px solid var(--accent-strong);
+  width: 100%;
+  padding: 10px 14px;
+}
+
+.btn-preset:hover {
+  background: var(--accent-strong);
+}
+
+.preset-hint,
+.settings-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: -6px;
+}
+
+.settings-hint code {
+  background: var(--bg-elevated);
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: var(--success);
 }
 
 /* Settings */

@@ -259,19 +259,28 @@ connectBtn.addEventListener("click", async () => {
 const splitRulesEl = document.getElementById("split-rules");
 const splitRulesEmpty = document.getElementById("split-rules-empty");
 
+// Human-readable labels for each `SplitRule` kind (matches wisp-core's
+// serde-tagged `{"kind":"...","value":"..."}` shape).
+const RULE_KIND_LABELS = {
+  process: "App",
+  process_path: "Path",
+  process_path_regex: "Path regex",
+  domain_suffix: "Domain",
+  domain_regex: "Domain regex",
+  ip_cidr: "IP",
+};
+
+// Example placeholders shown in the "add rule" value input, per kind.
+const RULE_KIND_PLACEHOLDERS = {
+  process: "chrome.exe",
+  process_path_regex: "C:\\\\Games\\\\.*",
+  domain_suffix: "example.com",
+  domain_regex: "^ads\\.",
+  ip_cidr: "1.2.3.0/24",
+};
+
 function ruleLabel(rule) {
-  switch (rule.kind) {
-    case "process":
-      return { kind: "App", value: rule.value };
-    case "process_path":
-      return { kind: "Path", value: rule.value };
-    case "domain_suffix":
-      return { kind: "Domain", value: rule.value };
-    case "ip_cidr":
-      return { kind: "IP", value: rule.value };
-    default:
-      return { kind: rule.kind, value: rule.value };
-  }
+  return { kind: RULE_KIND_LABELS[rule.kind] || rule.kind, value: rule.value };
 }
 
 async function loadSplit() {
@@ -295,7 +304,13 @@ function renderSplit() {
     const { kind, value } = ruleLabel(rule);
     const row = document.createElement("div");
     row.className = "split-rule";
-    row.innerHTML = `<span><span class="rule-kind">${kind}</span>${value}</span>`;
+    const label = document.createElement("span");
+    const kindSpan = document.createElement("span");
+    kindSpan.className = "rule-kind";
+    kindSpan.textContent = kind;
+    label.appendChild(kindSpan);
+    label.appendChild(document.createTextNode(value));
+    row.appendChild(label);
     const removeBtn = document.createElement("button");
     removeBtn.className = "rule-remove";
     removeBtn.textContent = "✕";
@@ -324,14 +339,65 @@ document.querySelectorAll('input[name="split-mode"]').forEach((input) => {
   });
 });
 
-document.getElementById("btn-add-domain").addEventListener("click", async () => {
-  const input = document.getElementById("input-domain");
-  const value = input.value.trim();
+// ---------- add rule (kind + value) ----------
+
+const selectRuleKind = document.getElementById("select-rule-kind");
+const inputRuleValue = document.getElementById("input-rule-value");
+
+function updateRuleValuePlaceholder() {
+  inputRuleValue.placeholder = RULE_KIND_PLACEHOLDERS[selectRuleKind.value] || "";
+}
+selectRuleKind.addEventListener("change", updateRuleValuePlaceholder);
+updateRuleValuePlaceholder();
+
+document.getElementById("btn-add-rule").addEventListener("click", async () => {
+  const kind = selectRuleKind.value;
+  const value = inputRuleValue.value.trim();
   if (!value) return;
   try {
-    await invoke("add_split_rule", { rule: { kind: "domain_suffix", value } });
-    input.value = "";
+    await invoke("add_split_rule", { rule: { kind, value } });
+    inputRuleValue.value = "";
     await loadSplit();
+  } catch (err) {
+    showError(String(err));
+  }
+});
+
+// ---------- Valve/Steam gaming preset ----------
+
+document.getElementById("btn-valve-preset").addEventListener("click", async () => {
+  try {
+    state.split = await invoke("add_valve_preset");
+    renderSplit();
+  } catch (err) {
+    showError(String(err));
+  }
+});
+
+// ---------- export / import split config ----------
+
+document.getElementById("btn-export-split").addEventListener("click", async () => {
+  try {
+    const path = await window.__TAURI__.dialog.save({
+      defaultPath: "wisp-split.json",
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!path) return;
+    await invoke("export_split", { path });
+  } catch (err) {
+    showError(String(err));
+  }
+});
+
+document.getElementById("btn-import-split").addEventListener("click", async () => {
+  try {
+    const path = await window.__TAURI__.dialog.open({
+      multiple: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (!path) return;
+    state.split = await invoke("import_split", { path });
+    renderSplit();
   } catch (err) {
     showError(String(err));
   }
@@ -391,11 +457,13 @@ function renderAppList(filter) {
 
 const inputMtu = document.getElementById("input-mtu");
 const inputAutostart = document.getElementById("input-autostart");
+const selectLogLevel = document.getElementById("select-log-level");
 
 async function loadSettings() {
   state.settings = await invoke("get_settings");
   inputMtu.value = state.settings.mtu;
   inputAutostart.checked = !!state.settings.autostart;
+  selectLogLevel.value = state.settings.log_level || "info";
 }
 
 document.getElementById("btn-save-settings").addEventListener("click", async () => {
@@ -404,6 +472,7 @@ document.getElementById("btn-save-settings").addEventListener("click", async () 
     ...state.settings,
     mtu: Number(inputMtu.value) || 1280,
     autostart: inputAutostart.checked,
+    log_level: selectLogLevel.value,
   };
   try {
     await invoke("set_settings", { settings: updated });

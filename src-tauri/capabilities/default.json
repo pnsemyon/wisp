@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the main window: file dialogs for split-tunnel export/import.",
+  "windows": ["main"],
+  "permissions": ["dialog:default"]
+}

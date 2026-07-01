@@ -125,6 +125,7 @@ pub async fn connect(state: State<'_, AppState>) -> Result<EngineStatus, String>
         clash_secret: inner.settings.clash_secret.clone(),
         clash_port: inner.settings.clash_port,
         socks_port: None,
+        log_level: inner.settings.log_level.clone(),
     };
     let config = match build_config(&profile, &inner.split, &build_settings) {
         Ok(config) => config,
@@ -231,39 +232,109 @@ pub async fn get_split(state: State<'_, AppState>) -> Result<SplitConfig, String
 #[tauri::command]
 pub async fn set_split_mode(state: State<'_, AppState>, mode: SplitMode) -> Result<(), String> {
     info!(mode = ?mode, "set_split_mode: updating");
-    let mut inner = state.inner.lock().await;
-    inner.split.mode = mode;
-    let result = state.save_split(&inner.split);
-    if let Err(err) = &result {
-        error!(%err, "set_split_mode: save failed");
+    {
+        let mut inner = state.inner.lock().await;
+        inner.split.mode = mode;
+        if let Err(err) = state.save_split(&inner.split) {
+            error!(%err, "set_split_mode: save failed");
+            return Err(err);
+        }
     }
-    result
+    apply_and_maybe_reconnect(state).await
 }
 
 #[tauri::command]
 pub async fn add_split_rule(state: State<'_, AppState>, rule: SplitRule) -> Result<(), String> {
     info!(rule = ?rule, "add_split_rule: adding");
-    let mut inner = state.inner.lock().await;
-    if !inner.split.rules.contains(&rule) {
-        inner.split.rules.push(rule);
+    {
+        let mut inner = state.inner.lock().await;
+        if !inner.split.rules.contains(&rule) {
+            inner.split.rules.push(rule);
+        }
+        if let Err(err) = state.save_split(&inner.split) {
+            error!(%err, "add_split_rule: save failed");
+            return Err(err);
+        }
     }
-    let result = state.save_split(&inner.split);
-    if let Err(err) = &result {
-        error!(%err, "add_split_rule: save failed");
-    }
-    result
+    apply_and_maybe_reconnect(state).await
 }
 
 #[tauri::command]
 pub async fn remove_split_rule(state: State<'_, AppState>, rule: SplitRule) -> Result<(), String> {
     info!(rule = ?rule, "remove_split_rule: removing");
-    let mut inner = state.inner.lock().await;
-    inner.split.rules.retain(|r| r != &rule);
-    let result = state.save_split(&inner.split);
+    {
+        let mut inner = state.inner.lock().await;
+        inner.split.rules.retain(|r| r != &rule);
+        if let Err(err) = state.save_split(&inner.split) {
+            error!(%err, "remove_split_rule: save failed");
+            return Err(err);
+        }
+    }
+    apply_and_maybe_reconnect(state).await
+}
+
+/// Write the current split-tunnel config as pretty JSON to `path`, for the
+/// user to back up or share.
+#[tauri::command]
+pub async fn export_split(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    info!(path = %path, "export_split: exporting");
+    let split = {
+        let inner = state.inner.lock().await;
+        inner.split.clone()
+    };
+    let text = serde_json::to_string_pretty(&split).map_err(|e| e.to_string())?;
+    let result = std::fs::write(&path, text).map_err(|e| format!("failed to write {path}: {e}"));
     if let Err(err) = &result {
-        error!(%err, "remove_split_rule: save failed");
+        error!(%err, "export_split: write failed");
     }
     result
+}
+
+/// Read a `SplitConfig` from `path`, replace the current one, persist it,
+/// and (if connected) apply it immediately.
+#[tauri::command]
+pub async fn import_split(state: State<'_, AppState>, path: String) -> Result<SplitConfig, String> {
+    info!(path = %path, "import_split: importing");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("failed to read {path}: {e}"))?;
+    let split: SplitConfig = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+
+    {
+        let mut inner = state.inner.lock().await;
+        inner.split = split.clone();
+        if let Err(err) = state.save_split(&inner.split) {
+            error!(%err, "import_split: save failed");
+            return Err(err);
+        }
+    }
+    apply_and_maybe_reconnect(state).await?;
+    Ok(split)
+}
+
+/// One-click preset: add every rule from `wisp_core::valve_gaming_preset()`
+/// (Valve/Steam IP ranges + domains) to the split config, switching a
+/// currently-`Off` mode to `Blacklist` since the preset is only meaningful
+/// as an exclude list. Applies immediately if the tunnel is connected.
+#[tauri::command]
+pub async fn add_valve_preset(state: State<'_, AppState>) -> Result<SplitConfig, String> {
+    info!("add_valve_preset: adding Valve/Steam gaming preset rules");
+    let split = {
+        let mut inner = state.inner.lock().await;
+        for rule in wisp_core::valve_gaming_preset() {
+            if !inner.split.rules.contains(&rule) {
+                inner.split.rules.push(rule);
+            }
+        }
+        if matches!(inner.split.mode, SplitMode::Off) {
+            inner.split.mode = SplitMode::Blacklist;
+        }
+        if let Err(err) = state.save_split(&inner.split) {
+            error!(%err, "add_valve_preset: save failed");
+            return Err(err);
+        }
+        inner.split.clone()
+    };
+    apply_and_maybe_reconnect(state).await?;
+    Ok(split)
 }
 
 /// Unique process executable names currently running, sorted, for the "Add
@@ -300,30 +371,66 @@ pub async fn set_settings(state: State<'_, AppState>, settings: Settings) -> Res
         mtu = settings.mtu,
         autostart = settings.autostart,
         clash_port = settings.clash_port,
+        log_level = %settings.log_level,
         "set_settings: updating"
     );
-    let mut inner = state.inner.lock().await;
-    inner.settings = settings;
+    {
+        let mut inner = state.inner.lock().await;
+        inner.settings = settings;
 
-    // Only rebuild the engine handle (picking up the new Clash API
-    // port/secret/mtu) if nothing is running: rebuilding while connected
-    // would point control commands (status/stats/switch) at a port the live
-    // sing-box process isn't actually listening on. If it's currently
-    // running, the new settings simply take effect on the next `connect`.
-    let current_state = inner.engine.status().await.state;
-    if matches!(current_state, wisp_engine::EngineState::Stopped) {
-        debug!("set_settings: rebuilding engine handle (engine currently stopped)");
-        inner.engine = std::sync::Arc::new(build_engine(&state.config_dir, &inner.settings));
-    } else {
-        debug!(
-            ?current_state,
-            "set_settings: engine running, deferring rebuild to next connect"
-        );
+        // Only rebuild the engine handle here (picking up the new Clash API
+        // port/secret/mtu) if nothing is running: rebuilding while connected
+        // would point control commands (status/stats/switch) at a port the
+        // live sing-box process isn't actually listening on. If it's
+        // currently running, `apply_and_maybe_reconnect` below rebuilds the
+        // engine (and the config) as part of the reconnect.
+        let current_state = inner.engine.status().await.state;
+        if matches!(current_state, wisp_engine::EngineState::Stopped) {
+            debug!("set_settings: rebuilding engine handle (engine currently stopped)");
+            inner.engine = std::sync::Arc::new(build_engine(&state.config_dir, &inner.settings));
+        } else {
+            debug!(
+                ?current_state,
+                "set_settings: engine running, will rebuild config and reconnect"
+            );
+        }
+
+        if let Err(err) = state.save_settings(&inner.settings) {
+            error!(%err, "set_settings: save failed");
+            return Err(err);
+        }
+    }
+    apply_and_maybe_reconnect(state).await
+}
+
+/// Shared by `set_settings`/`set_split_mode`/`add_split_rule`/
+/// `remove_split_rule`/`import_split`: if the engine is currently running,
+/// rebuild the sing-box config from the (already persisted) settings/split
+/// and restart the engine so the change takes effect immediately, by
+/// reusing `connect` (which itself stops any previous instance before
+/// starting the new one). If the engine isn't running, this is a no-op —
+/// the change simply takes effect on the next `connect`.
+///
+/// Callers must not hold `state.inner`'s lock when calling this: it takes
+/// (and releases) the lock itself just to read the engine state, then calls
+/// `connect`, which takes its own lock. Holding the guard across that call
+/// would deadlock on the (non-reentrant) tokio mutex.
+async fn apply_and_maybe_reconnect(state: State<'_, AppState>) -> Result<(), String> {
+    let is_running = {
+        let inner = state.inner.lock().await;
+        matches!(
+            inner.engine.status().await.state,
+            wisp_engine::EngineState::Running
+        )
+    };
+    if !is_running {
+        return Ok(());
     }
 
-    let result = state.save_settings(&inner.settings);
-    if let Err(err) = &result {
-        error!(%err, "set_settings: save failed");
+    info!("apply_and_maybe_reconnect: engine running, rebuilding config and reconnecting");
+    if let Err(err) = connect(state).await {
+        error!(%err, "apply_and_maybe_reconnect: reconnect failed");
+        return Err(err);
     }
-    result
+    Ok(())
 }

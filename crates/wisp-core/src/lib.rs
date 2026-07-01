@@ -7,12 +7,14 @@
 
 pub mod error;
 pub mod parse;
+pub mod presets;
 pub mod profile;
 pub mod singbox;
 pub mod split;
 
 pub use error::{Result, WispError};
 pub use parse::import;
+pub use presets::valve_gaming_preset;
 pub use profile::Profile;
 pub use singbox::{build_config, BuildSettings};
 pub use split::{SplitConfig, SplitMode, SplitRule};

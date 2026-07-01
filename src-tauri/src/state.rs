@@ -23,6 +23,11 @@ pub struct Settings {
     /// Secret for sing-box's Clash API. Deterministic (not random) so it
     /// survives reinstalls without needing a CSPRNG dependency.
     pub clash_secret: String,
+    /// sing-box log verbosity (`error`/`warn`/`info`/`debug`/`trace`).
+    /// Defaulted for `settings.json` files persisted before this field
+    /// existed.
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
 }
 
 impl Default for Settings {
@@ -32,8 +37,13 @@ impl Default for Settings {
             autostart: false,
             clash_port: 9090,
             clash_secret: default_clash_secret(),
+            log_level: default_log_level(),
         }
     }
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
 }
 
 /// A fixed-but-unique secret derived from the app identifier. Not

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Wisp</title>
+    <link rel="stylesheet" href="./assets/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <!-- Header -->
+      <header class="header">
+        <div class="brand">
+          <span class="brand-mark">W</span>
+          <span class="brand-name">Wisp</span>
+        </div>
+        <div class="status-pill" id="status-pill" data-state="stopped">
+          <span class="status-dot"></span>
+          <span id="status-text">Stopped</span>
+        </div>
+      </header>
+
+      <main class="content">
+        <!-- Profile selector -->
+        <section class="card">
+          <div class="card-header">
+            <h2>Profile</h2>
+            <div class="card-actions">
+              <button class="btn btn-ghost" id="btn-import">Import</button>
+              <button class="btn btn-ghost btn-danger" id="btn-delete-profile" title="Delete profile">Delete</button>
+            </div>
+          </div>
+          <select id="profile-select" class="select">
+            <option value="">No profiles yet</option>
+          </select>
+
+          <div class="field">
+            <label class="label" for="server-select">Server</label>
+            <select id="server-select" class="select">
+              <option value="">—</option>
+            </select>
+          </div>
+        </section>
+
+        <!-- Connect toggle -->
+        <section class="card connect-card">
+          <button id="btn-connect" class="connect-toggle" data-connected="false">
+            <span id="connect-label">Connect</span>
+          </button>
+          <div class="traffic-row">
+            <div class="traffic-stat">
+              <span class="traffic-label">↓ Down</span>
+              <span class="traffic-value" id="down-speed">0 B/s</span>
+              <span class="traffic-total" id="down-total">0 B</span>
+            </div>
+            <div class="traffic-stat">
+              <span class="traffic-label">↑ Up</span>
+              <span class="traffic-value" id="up-speed">0 B/s</span>
+              <span class="traffic-total" id="up-total">0 B</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Split tunneling -->
+        <section class="card">
+          <div class="card-header">
+            <h2>Split tunneling</h2>
+          </div>
+          <div class="split-modes" id="split-modes">
+            <label class="radio-card">
+              <input type="radio" name="split-mode" value="off" />
+              <div>
+                <div class="radio-title">Off</div>
+                <div class="radio-desc">Everything goes through the proxy.</div>
+              </div>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="split-mode" value="exclude" />
+              <div>
+                <div class="radio-title">Exclude</div>
+                <div class="radio-desc">Listed apps/domains go direct, everything else is proxied.</div>
+              </div>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="split-mode" value="include" />
+              <div>
+                <div class="radio-title">Include</div>
+                <div class="radio-desc">Only listed apps/domains are proxied, everything else goes direct.</div>
+              </div>
+            </label>
+          </div>
+
+          <div class="split-rules" id="split-rules">
+            <div class="empty-hint" id="split-rules-empty">No rules yet.</div>
+          </div>
+
+          <div class="split-add-row">
+            <button class="btn btn-secondary" id="btn-add-app">+ Add app</button>
+            <div class="add-domain">
+              <input type="text" id="input-domain" class="input" placeholder="example.com" />
+              <button class="btn btn-secondary" id="btn-add-domain">+ Add domain</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Settings -->
+        <section class="card">
+          <div class="card-header">
+            <h2>Settings</h2>
+          </div>
+          <div class="settings-row">
+            <label class="label" for="input-mtu">MTU</label>
+            <input type="number" id="input-mtu" class="input input-small" min="576" max="9000" value="1280" />
+          </div>
+          <div class="settings-row">
+            <label class="label" for="input-autostart">Launch at login</label>
+            <input type="checkbox" id="input-autostart" />
+          </div>
+          <button class="btn btn-primary" id="btn-save-settings">Save settings</button>
+        </section>
+
+        <!-- Logs -->
+        <section class="card">
+          <button class="card-header collapsible" id="logs-toggle">
+            <h2>Logs</h2>
+            <span class="chevron" id="logs-chevron">▸</span>
+          </button>
+          <div class="logs-panel hidden" id="logs-panel">
+            <pre id="logs-output" class="logs-output"></pre>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Import modal -->
+    <div class="modal-backdrop hidden" id="import-modal">
+      <div class="modal">
+        <h3>Import profile</h3>
+        <p class="modal-hint">
+          Paste a sing-box <code>{"outbounds": [...]}</code> JSON, or one or more
+          <code>vless://</code> / <code>hysteria2://</code> links (one per line).
+        </p>
+        <textarea id="import-text" class="textarea" rows="10" placeholder="Paste here..."></textarea>
+        <div id="import-error" class="error-text hidden"></div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" id="btn-import-cancel">Cancel</button>
+          <button class="btn btn-primary" id="btn-import-confirm">Import</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add app modal -->
+    <div class="modal-backdrop hidden" id="app-modal">
+      <div class="modal">
+        <h3>Add app</h3>
+        <p class="modal-hint">Pick a running process to split-tunnel by name.</p>
+        <input type="text" id="app-filter" class="input" placeholder="Filter processes..." />
+        <div id="app-list" class="pick-list"></div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" id="btn-app-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="./src/main.js"></script>
+  </body>
+</html>

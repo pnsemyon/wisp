@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/wisp-core",
+    "crates/wisp-engine",
+    "crates/wisp-cli",
+]
+# src-tauri is a standalone workspace (it needs a webview toolchain / Windows to
+# build) so the pure-Rust crates above stay buildable and testable on any OS.
+exclude = ["src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Wisp contributors"]
+repository = "https://github.com/pnsemyon/wisp"
+rust-version = "1.77"
+
+[workspace.dependencies]
+wisp-core = { path = "crates/wisp-core" }
+wisp-engine = { path = "crates/wisp-engine" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+base64 = "0.22"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

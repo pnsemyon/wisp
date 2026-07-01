@@ -1,0 +1,31 @@
+# Rust
+/target
+**/target
+Cargo.lock.bak
+
+# Tauri build output
+/src-tauri/target
+/src-tauri/gen
+
+# Bundled engine binaries (downloaded via scripts/fetch-resources)
+/resources/sing-box.exe
+/resources/sing-box
+/resources/wintun.dll
+/resources/*.zip
+/resources/*.tar.gz
+
+# Node / frontend
+node_modules
+/ui/dist
+dist
+
+# Editor / OS
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json
+*.log
+
+# Local secrets / profiles (never commit real VPN credentials)
+*.local.json
+/profiles

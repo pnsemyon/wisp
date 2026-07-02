@@ -35,11 +35,21 @@ pub enum SplitRule {
     /// Regular expression matched against the process path.
     ProcessPathRegex(String),
     IpCidr(String),
+    /// A named bundle of concrete rules (e.g. `"valve"`), stored as a SINGLE
+    /// entry so the UI can show one row for a whole category. Expanded into
+    /// its constituent rules by [`crate::presets::expand_rules`] before config
+    /// generation; it therefore never reaches [`SplitRule::field`] in practice.
+    Preset(String),
 }
 
 impl SplitRule {
     /// The sing-box route-rule field name and value this rule maps to,
     /// e.g. `("process_name", "chrome.exe")`.
+    ///
+    /// [`SplitRule::Preset`] has no single field — it must be expanded (see
+    /// [`crate::presets::expand_rules`]) before routing. It maps to the inert
+    /// `("preset", id)` here purely to keep the match total; callers that emit
+    /// route/DNS rules skip the `"preset"` field defensively.
     pub fn field(&self) -> (&'static str, &str) {
         match self {
             SplitRule::Process(v) => ("process_name", v.as_str()),
@@ -48,6 +58,7 @@ impl SplitRule {
             SplitRule::DomainRegex(v) => ("domain_regex", v.as_str()),
             SplitRule::ProcessPathRegex(v) => ("process_path_regex", v.as_str()),
             SplitRule::IpCidr(v) => ("ip_cidr", v.as_str()),
+            SplitRule::Preset(v) => ("preset", v.as_str()),
         }
     }
 }
@@ -123,6 +134,16 @@ mod tests {
             json,
             serde_json::json!({"kind": "process", "value": "chrome.exe"})
         );
+
+        // A preset is persisted as a single tagged entry.
+        let rule = SplitRule::Preset("valve".into());
+        let json = serde_json::to_value(&rule).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "preset", "value": "valve"})
+        );
+        let back: SplitRule = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, SplitRule::Preset("valve".into()));
     }
 
     #[test]

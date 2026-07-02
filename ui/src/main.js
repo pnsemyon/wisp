@@ -268,6 +268,14 @@ const RULE_KIND_LABELS = {
   domain_suffix: "Domain",
   domain_regex: "Domain regex",
   ip_cidr: "IP",
+  preset: "Preset",
+};
+
+// Friendly names for preset rules (a single `{kind:"preset",value:"<id>"}`
+// entry that expands to many concrete rules in the engine). New presets get an
+// entry here plus one in wisp-core's `presets::preset_label`.
+const PRESET_LABELS = {
+  valve: "Valve / Steam games (Dota 2, CS, Steam)",
 };
 
 // Example placeholders shown in the "add rule" value input, per kind.
@@ -280,7 +288,12 @@ const RULE_KIND_PLACEHOLDERS = {
 };
 
 function ruleLabel(rule) {
-  return { kind: RULE_KIND_LABELS[rule.kind] || rule.kind, value: rule.value };
+  const kind = RULE_KIND_LABELS[rule.kind] || rule.kind;
+  const value =
+    rule.kind === "preset"
+      ? PRESET_LABELS[rule.value] || rule.value
+      : rule.value;
+  return { kind, value };
 }
 
 async function loadSplit() {
@@ -304,6 +317,7 @@ function renderSplit() {
     const { kind, value } = ruleLabel(rule);
     const row = document.createElement("div");
     row.className = "split-rule";
+    if (rule.kind === "preset") row.classList.add("split-rule-preset");
     const label = document.createElement("span");
     const kindSpan = document.createElement("span");
     kindSpan.className = "rule-kind";

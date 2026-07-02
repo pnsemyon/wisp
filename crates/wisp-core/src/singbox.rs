@@ -258,6 +258,14 @@ pub fn build_config(
         }));
     }
 
+    // Expand any preset rules (e.g. a single "valve" entry) into their concrete
+    // rules once, up front, so routing and DNS both see the same flat rule set
+    // and never have to reason about presets.
+    let split = &SplitConfig {
+        mode: split.mode,
+        rules: crate::presets::expand_rules(&split.rules),
+    };
+
     let route = build_route(split);
     let dns = build_dns(split);
 
@@ -285,16 +293,20 @@ pub fn build_config(
 /// 10–37s per lookup — long enough for Steam to give up ("cannot determine
 /// latency").
 ///
-/// The direct resolver is a plain UDP server (`1.1.1.1`) whose queries ride
-/// the `direct` outbound (`detour: "direct"`). This is deliberate and load-
-/// bearing: a `type: local` server delegates to the Windows OS resolver, whose
-/// queries then leave over the default route — which the TUN's `auto_route`
-/// has captured — get re-hijacked by the `hijack-dns` route rule, and loop
-/// back into sing-box. That self-contention was measured at 10–32s with
-/// `context deadline exceeded` even though direct traffic itself resolved in
-/// ~5ms. Routing the direct resolver through the `direct` outbound (the same
-/// path direct app traffic already takes) avoids the OS resolver entirely and
-/// resolves at physical-link speed.
+/// The direct resolver is a DoH (HTTPS/443) server (`1.1.1.1`) whose queries
+/// ride the `direct` outbound (`detour: "direct"`). Both properties are load-
+/// bearing, each learned from a real failure:
+///   1. NOT `type: local`: that delegates to the Windows OS resolver, whose
+///      queries leave over the default route — which the TUN's `auto_route`
+///      captured — get re-hijacked by `hijack-dns`, and loop back into
+///      sing-box (10–32s stalls, `context deadline exceeded`).
+///   2. NOT plain UDP/53: restrictive ISPs drop outbound UDP/53 to public
+///      resolvers, so queries retried on a ~5s timer and piled up at
+///      5/10/15/20/25s. DoH over 443 avoids UDP entirely — and direct TCP/443
+///      was measured at ~5ms on the same network, so it resolves fast.
+///
+/// Routing it through the `direct` outbound (the path direct app traffic
+/// already takes) keeps it off the tunnel and near the user's real region.
 ///
 /// - **Blacklist**: unmatched queries use the proxied resolver (first server);
 ///   excluded (direct) domains/apps are pinned to `dns-direct`.
@@ -305,12 +317,22 @@ pub fn build_config(
 /// `ip_cidr` rules are skipped here — you can't match a DNS query by the
 /// destination IP it hasn't resolved yet; those only steer routing.
 fn build_dns(split: &SplitConfig) -> Value {
+    // DoH (HTTPS/443) rather than DoT (853): 443 is the least-likely-blocked
+    // port and the most connection-efficient over the proxy, which matters
+    // because ALL non-excluded DNS (the whole system, incl. WSL, while the TUN
+    // is up) resolves here.
     let remote =
-        json!({ "type": "tls", "tag": "dns-remote", "server": "8.8.8.8", "detour": "proxy" });
-    // NOT `type: local` — see the doc comment above. Must resolve via the
-    // `direct` outbound so the query bypasses the TUN/hijack-dns loop.
+        json!({ "type": "https", "tag": "dns-remote", "server": "8.8.8.8", "detour": "proxy" });
+    // The direct resolver must (a) NOT be `type: local` — that delegates to the
+    // Windows OS resolver, whose queries loop back through the TUN/hijack-dns
+    // and stall — and (b) NOT use plain UDP/53: restrictive ISPs (exactly the
+    // networks a VPN is used on) drop outbound UDP/53 to public resolvers, and
+    // sing-box then retries on a ~5s timer, so lookups pile up at 5/10/15/20/25s
+    // and Steam relay discovery times out. Direct TCP/443 was measured at ~5ms
+    // on the same network, so resolve over DoH (HTTPS/443) through the `direct`
+    // outbound: it dodges both the OS-resolver loop and the UDP/53 blackhole.
     let direct =
-        json!({ "type": "udp", "tag": "dns-direct", "server": "1.1.1.1", "detour": "direct" });
+        json!({ "type": "https", "tag": "dns-direct", "server": "1.1.1.1", "detour": "direct" });
 
     // sing-box resolves an unmatched query with the FIRST server in the list,
     // so server order encodes the default resolver for each mode.
@@ -340,7 +362,9 @@ fn dns_rule_group(rules: &[SplitRule], server: &str) -> Vec<Value> {
     let mut grouped: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
     for rule in rules {
         let (field, value) = rule.field();
-        if field == "ip_cidr" {
+        // `ip_cidr` can't match an unresolved DNS query; `preset` should have
+        // been expanded away already (skip defensively either way).
+        if field == "ip_cidr" || field == "preset" {
             continue;
         }
         grouped.entry(field).or_default().push(value.to_string());
@@ -401,6 +425,12 @@ fn rule_group(rules: &[SplitRule], outbound: &str) -> Vec<Value> {
     let mut grouped: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
     for rule in rules {
         let (field, value) = rule.field();
+        // `preset` is not a real sing-box field; it should already be expanded
+        // away by `build_config`, but skip it defensively so a stray preset
+        // can never emit an invalid route rule.
+        if field == "preset" {
+            continue;
+        }
         grouped.entry(field).or_default().push(value.to_string());
     }
 
@@ -470,7 +500,7 @@ mod tests {
             .iter()
             .find(|s| s["tag"] == "dns-remote")
             .expect("dns-remote present");
-        assert_eq!(remote["type"], "tls");
+        assert_eq!(remote["type"], "https");
         assert_eq!(remote["server"], "8.8.8.8");
         assert_eq!(remote["detour"], "proxy");
         // The legacy `address` field is gone in the new schema.
@@ -482,7 +512,7 @@ mod tests {
             .iter()
             .find(|s| s["tag"] == "dns-direct")
             .expect("dns-direct present");
-        assert_eq!(direct["type"], "udp");
+        assert_eq!(direct["type"], "https");
         assert_eq!(direct["detour"], "direct");
         assert!(direct.get("address").is_none());
 

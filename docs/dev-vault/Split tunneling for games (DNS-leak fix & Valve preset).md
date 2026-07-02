@@ -122,8 +122,48 @@ cause (DNS latency over the xhttp/REALITY tunnel, not the OS-resolver loop); not
 addressed by the v0.1.4 fix, which only makes the DIRECT path fast. Revisit if
 general browsing is sluggish.
 
-## Still uncertain (needs on-machine verification)
-The v0.1.4 fix is high-confidence because the mechanism is confirmed in the log
-(OS-resolver query entering the TUN) and the replacement rides a path measured at
-~5ms in the same log — but confirm on-machine that game DNS now resolves
-sub-second and Dota determines latency.
+## Update (2026-07-02): act four — the ISP drops UDP/53, so DoH is mandatory
+
+v0.1.4's `dns-direct` (`type: udp` `1.1.1.1` `detour: direct`) STILL stalled 10–32s.
+The v0.1.4 log settled it: direct **TCP/443** connections were ~5ms, but direct
+**UDP/53** DNS piled up at exactly 5/10/15/20/25/31s — a classic timeout-and-retry
+ladder. The user's network **drops outbound UDP/53 to public resolvers** (the
+same censorship that makes them need the VPN). So no UDP resolver — direct or not
+— can ever be fast here.
+
+Also learned the routing tag naming had misled earlier reads: the proxy outbound
+logs as `outbound/vless[<server name>]`, NOT `outbound/proxy`. Re-counting the
+v0.1.4 main session: **512 conns via vless (proxy), 2 direct** — and the game
+never reached SDR relay probing because `steamserver.net` discovery timed out at
+31s.
+
+**Fix (v0.1.5):**
+1. `dns-direct` → **DoH** (`type: https` `1.1.1.1` `detour: direct`). Port 443,
+   which is proven ~5ms direct, so it dodges both the OS-resolver/TUN loop AND
+   the UDP/53 blackhole.
+2. `dns-remote` → **DoH** too (`type: https` `8.8.8.8` `detour: proxy`). This is
+   the system-wide default resolver while the TUN is up; it had also been slow.
+   Symptom that forced this: with v0.1.4 connected, **WSL lost network / DNS**
+   — because `auto_route`+`strict_route` route WSL's DNS through Wisp too, so a
+   broken proxied resolver breaks the whole machine, not just the game.
+3. Valve preset now ALSO includes game **processes** (`VALVE_PROCESSES`:
+   dota2.exe, cs2.exe, csgo.exe, steam.exe, steamwebhelper.exe, steamservice.exe,
+   hl2.exe). Three complementary levers (process + IP + domain) so coverage
+   doesn't hinge on any one — IP ranges (AS32590) miss CDN nodes on ISP networks
+   (e.g. dota2.com on 212.95.160.0/19 = AS8717, a Bulgarian ISP), and process
+   matching alone was historically unreliable for short UDP.
+
+### Preset is now a single `SplitRule::Preset("valve")` entry
+Stored as one row (UI shows "Valve / Steam games …"), expanded to its concrete
+rules by `presets::expand_rules()` in `build_config` before routing/DNS. Extension
+point for future presets: add an id to `preset_rules`/`preset_label` +
+`PRESET_LABELS` in the UI. `add_valve_preset` dedups/migrates older expanded
+configs via `is_preset_member`.
+
+## Still open / uncertain
+- Whether DoH-over-proxy (`dns-remote`) is actually fast depends partly on the
+  tunnel/server; if general browsing stays slow, diagnose the proxy DNS path
+  (connection reuse, xhttp stream setup) separately.
+- Process-matching reliability on Windows (`system` TUN stack) is still unproven;
+  the IP+domain levers are the safety net. Confirm from a real gameplay-length
+  log (info level already shows `outbound/direct` vs `outbound/vless`).

@@ -310,20 +310,32 @@ pub async fn import_split(state: State<'_, AppState>, path: String) -> Result<Sp
     Ok(split)
 }
 
-/// One-click preset: add every rule from `wisp_core::valve_gaming_preset()`
-/// (Valve/Steam IP ranges + domains) to the split config, switching a
-/// currently-`Off` mode to `Blacklist` since the preset is only meaningful
-/// as an exclude list. Applies immediately if the tunnel is connected.
+/// One-click preset: add the Valve/Steam gaming bundle as a SINGLE
+/// `SplitRule::Preset("valve")` entry (it expands to game processes + Valve IP
+/// ranges + Steam domains at config-build time), switching a currently-`Off`
+/// mode to `Blacklist` since the preset is only meaningful as an exclude list.
+///
+/// Any pre-existing member of the preset — whether an older config that stored
+/// the rules expanded, or a duplicate preset entry — is removed first, so the
+/// UI ends up with exactly one collapsed row. Applies immediately if the
+/// tunnel is connected.
 #[tauri::command]
 pub async fn add_valve_preset(state: State<'_, AppState>) -> Result<SplitConfig, String> {
-    info!("add_valve_preset: adding Valve/Steam gaming preset rules");
+    use wisp_core::presets::{is_preset_member, VALVE_PRESET_ID};
+
+    info!("add_valve_preset: adding Valve/Steam gaming preset as a single rule");
     let split = {
         let mut inner = state.inner.lock().await;
-        for rule in wisp_core::valve_gaming_preset() {
-            if !inner.split.rules.contains(&rule) {
-                inner.split.rules.push(rule);
-            }
-        }
+        // Drop any existing constituents / duplicate preset so re-clicking (and
+        // migrating an old expanded config) collapses to one entry.
+        inner
+            .split
+            .rules
+            .retain(|r| !is_preset_member(VALVE_PRESET_ID, r));
+        inner
+            .split
+            .rules
+            .push(SplitRule::Preset(VALVE_PRESET_ID.to_string()));
         if matches!(inner.split.mode, SplitMode::Off) {
             inner.split.mode = SplitMode::Blacklist;
         }

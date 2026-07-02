@@ -278,16 +278,27 @@ pub fn build_config(
 
 /// Build the `dns` section. The subtlety that actually makes split tunneling
 /// *work* for latency-sensitive apps: a direct-routed app must ALSO resolve
-/// its domains via the local resolver, not the proxied one. Otherwise the app
-/// gets an answer geolocated to the proxy exit (e.g. Steam hands out
-/// Warsaw/Bulgaria relays) and — worse — pays the proxy's DNS round-trip,
+/// its domains directly (near the user), not through the proxied resolver.
+/// Otherwise the app gets an answer geolocated to the proxy exit (e.g. Steam
+/// hands out Warsaw/Bulgaria relays) and pays the proxy's DNS round-trip,
 /// which over an xhttp/REALITY tunnel to a distant VPS was observed at
-/// 10–37s per lookup, long enough for Steam to give up ("cannot determine
-/// latency"). So:
+/// 10–37s per lookup — long enough for Steam to give up ("cannot determine
+/// latency").
+///
+/// The direct resolver is a plain UDP server (`1.1.1.1`) whose queries ride
+/// the `direct` outbound (`detour: "direct"`). This is deliberate and load-
+/// bearing: a `type: local` server delegates to the Windows OS resolver, whose
+/// queries then leave over the default route — which the TUN's `auto_route`
+/// has captured — get re-hijacked by the `hijack-dns` route rule, and loop
+/// back into sing-box. That self-contention was measured at 10–32s with
+/// `context deadline exceeded` even though direct traffic itself resolved in
+/// ~5ms. Routing the direct resolver through the `direct` outbound (the same
+/// path direct app traffic already takes) avoids the OS resolver entirely and
+/// resolves at physical-link speed.
 ///
 /// - **Blacklist**: unmatched queries use the proxied resolver (first server);
-///   excluded (direct) domains/apps are pinned to `dns-local`.
-/// - **Whitelist**: unmatched queries use `dns-local` (first server); only the
+///   excluded (direct) domains/apps are pinned to `dns-direct`.
+/// - **Whitelist**: unmatched queries use `dns-direct` (first server); only the
 ///   whitelisted (proxied) domains/apps are pinned to `dns-remote`.
 /// - **Off**: everything uses the proxied resolver.
 ///
@@ -296,18 +307,21 @@ pub fn build_config(
 fn build_dns(split: &SplitConfig) -> Value {
     let remote =
         json!({ "type": "tls", "tag": "dns-remote", "server": "8.8.8.8", "detour": "proxy" });
-    let local = json!({ "type": "local", "tag": "dns-local" });
+    // NOT `type: local` — see the doc comment above. Must resolve via the
+    // `direct` outbound so the query bypasses the TUN/hijack-dns loop.
+    let direct =
+        json!({ "type": "udp", "tag": "dns-direct", "server": "1.1.1.1", "detour": "direct" });
 
     // sing-box resolves an unmatched query with the FIRST server in the list,
     // so server order encodes the default resolver for each mode.
     let (servers, rules): (Vec<Value>, Vec<Value>) = match split.mode {
-        SplitMode::Off => (vec![remote, local], Vec::new()),
+        SplitMode::Off => (vec![remote, direct], Vec::new()),
         SplitMode::Blacklist => (
-            vec![remote, local],
-            dns_rule_group(&split.rules, "dns-local"),
+            vec![remote, direct],
+            dns_rule_group(&split.rules, "dns-direct"),
         ),
         SplitMode::Whitelist => (
-            vec![local, remote],
+            vec![direct, remote],
             dns_rule_group(&split.rules, "dns-remote"),
         ),
     };
@@ -374,7 +388,7 @@ fn build_route(split: &SplitConfig) -> Value {
 
     json!({
         "auto_detect_interface": true,
-        "default_domain_resolver": "dns-local",
+        "default_domain_resolver": "dns-direct",
         "final": final_outbound,
         "rules": rules,
     })
@@ -462,12 +476,15 @@ mod tests {
         // The legacy `address` field is gone in the new schema.
         assert!(remote.get("address").is_none());
 
-        let local = servers
+        // The direct resolver must ride the `direct` outbound (not the OS
+        // resolver), or its queries loop through the TUN/hijack-dns and stall.
+        let direct = servers
             .iter()
-            .find(|s| s["tag"] == "dns-local")
-            .expect("dns-local present");
-        assert_eq!(local["type"], "local");
-        assert!(local.get("address").is_none());
+            .find(|s| s["tag"] == "dns-direct")
+            .expect("dns-direct present");
+        assert_eq!(direct["type"], "udp");
+        assert_eq!(direct["detour"], "direct");
+        assert!(direct.get("address").is_none());
 
         assert_eq!(config["dns"]["strategy"], "prefer_ipv4");
     }
@@ -479,7 +496,7 @@ mod tests {
         let settings = BuildSettings::default();
         let config = build_config(&profile, &split, &settings).expect("build should succeed");
 
-        assert_eq!(config["route"]["default_domain_resolver"], "dns-local");
+        assert_eq!(config["route"]["default_domain_resolver"], "dns-direct");
         assert_eq!(config["route"]["auto_detect_interface"], true);
     }
 
@@ -782,12 +799,12 @@ mod tests {
             .iter()
             .find(|r| r.get("domain_suffix").is_some())
             .expect("excluded domain has a dns rule");
-        assert_eq!(domain_rule["server"], "dns-local");
+        assert_eq!(domain_rule["server"], "dns-direct");
         let proc_rule = rules
             .iter()
             .find(|r| r.get("process_name").is_some())
             .expect("excluded process has a dns rule");
-        assert_eq!(proc_rule["server"], "dns-local");
+        assert_eq!(proc_rule["server"], "dns-direct");
         // ip_cidr can't match a DNS query, so it must never become a dns rule.
         assert!(rules.iter().all(|r| r.get("ip_cidr").is_none()));
     }
@@ -805,7 +822,7 @@ mod tests {
 
         // Default resolver (first server) is local; only whitelisted domains
         // go through the proxied resolver.
-        assert_eq!(dns["servers"][0]["tag"], "dns-local");
+        assert_eq!(dns["servers"][0]["tag"], "dns-direct");
         let rules = dns["rules"].as_array().expect("dns rules present");
         assert_eq!(rules[0]["domain_suffix"][0], "example.com");
         assert_eq!(rules[0]["server"], "dns-remote");

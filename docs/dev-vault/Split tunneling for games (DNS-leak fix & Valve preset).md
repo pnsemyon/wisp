@@ -85,8 +85,45 @@ killing **both** `wisp-app.exe` AND `sing-box.exe` before reinstall — the runn
 engine also locks files. The eventual installer hook (task #16) must terminate
 both processes.
 
+## Update (2026-07-02): act three — `type: local` self-hijacks through the TUN
+
+v0.1.3 shipped `dns.rules` pinning excluded domains to `dns-local`. User
+retested — **still broke**. The v0.1.3 log showed the rules WERE applied
+(`store.steampowered.com` → `dns-local`) and even returned correct-region IPs
+(`95.100.176.105`, a local Akamai node — not Bulgaria). But `dns-local` lookups
+still took **10–32s and failed** (`context deadline exceeded`), while direct app
+traffic in the very same log was **~5ms** (`outbound/direct to 95.100.176.105:443
+[6ms]`).
+
+The tell in the log: `inbound/tun[tun-in]: inbound packet connection to
+1.1.1.1:53`. `type: local` delegates resolution to the **Windows OS resolver**,
+whose queries leave over the default route — which `tun.auto_route` has captured
+— get re-hijacked by the `hijack-dns` route rule, and loop back into sing-box.
+That self-contention is the multi-second stall. `type: local` is the wrong tool
+once the TUN owns the default route.
+
+**Fix (v0.1.4, `build_dns`):** replace the `type: local` server with a plain UDP
+server that rides the **`direct` outbound**:
+```json
+{ "type": "udp", "tag": "dns-direct", "server": "1.1.1.1", "detour": "direct" }
+```
+`detour: direct` makes sing-box resolve the query itself over the physical
+interface (the same path direct app traffic already uses, proven ~5ms), instead
+of handing it to the OS resolver where it loops through the TUN. Renamed
+`dns-local` → `dns-direct` everywhere incl. `route.default_domain_resolver`.
+Validated Off/Blacklist/Whitelist with `sing-box check`.
+
+Why 1.1.1.1: the user's machine was already querying `1.1.1.1:53`, so it's known
+reachable there; and it's an IP, so the server needs no bootstrap resolution.
+
+**Separate, still-open:** the *proxied* resolver (`dns-remote`, DoT 8.8.8.8 via
+proxy) was also slow (10–37s) for general (non-excluded) traffic. Different root
+cause (DNS latency over the xhttp/REALITY tunnel, not the OS-resolver loop); not
+addressed by the v0.1.4 fix, which only makes the DIRECT path fast. Revisit if
+general browsing is sluggish.
+
 ## Still uncertain (needs on-machine verification)
-Whether process-matching alone ever reliably catches the game's UDP on Windows is
-unproven — the IP-range preset is the robust path. Confirm from the user's log
-(with `log_level=debug`) that game DNS now shows sub-second lookups and
-`outbound/direct` after applying the preset on v0.1.3.
+The v0.1.4 fix is high-confidence because the mechanism is confirmed in the log
+(OS-resolver query entering the TUN) and the replacement rides a path measured at
+~5ms in the same log — but confirm on-machine that game DNS now resolves
+sub-second and Dota determines latency.

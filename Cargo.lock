@@ -1599,7 +1599,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 
 [[package]]
 name = "wisp-cli"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -1613,7 +1613,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "base64",
  "serde",
@@ -1625,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "wisp-engine"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-trait",
